@@ -1,0 +1,226 @@
+{
+  "config": {
+    "geometric": {
+      "affine": {
+        "p": 1.0,
+        "rot_deg": 15.0,
+        "scale_range": [
+          0.9,
+          1.1
+        ]
+      },
+      "tps": {
+        "p": 1.0,
+        "max_disp": 12.0,
+        "n_ctrl": 5
+      }
+    },
+    "photometric": {
+      "gamma": {
+        "p": 1.0,
+        "gamma_range": [
+          0.8,
+          1.2
+        ]
+      },
+      "gaussian_blur": {
+        "p": 1.0,
+        "sigma_range": [
+          0.5,
+          2.0
+        ]
+      },
+      "gaussian_noise": {
+        "p": 1.0,
+        "sigma_range": [
+          0.005,
+          0.04
+        ]
+      }
+    }
+  },
+  "warmup": 5,
+  "iter": 20,
+  "results": [
+    {
+      "device": "cpu",
+      "image_size": "256x256",
+      "batch": 1,
+      "median_ms": 5.409,
+      "p5_ms": 4.494,
+      "p95_ms": 18.712,
+      "throughput_imgs_per_s": 184.9,
+      "n_iter": 20
+    },
+    {
+      "device": "cpu",
+      "image_size": "256x256",
+      "batch": 8,
+      "median_ms": 43.619,
+      "p5_ms": 31.597,
+      "p95_ms": 57.226,
+      "throughput_imgs_per_s": 183.4,
+      "n_iter": 20
+    },
+    {
+      "device": "cpu",
+      "image_size": "256x256",
+      "batch": 32,
+      "median_ms": 189.695,
+      "p5_ms": 176.121,
+      "p95_ms": 210.367,
+      "throughput_imgs_per_s": 168.7,
+      "n_iter": 20
+    },
+    {
+      "device": "cpu",
+      "image_size": "512x512",
+      "batch": 1,
+      "median_ms": 17.386,
+      "p5_ms": 14.916,
+      "p95_ms": 55.843,
+      "throughput_imgs_per_s": 57.5,
+      "n_iter": 20
+    },
+    {
+      "device": "cpu",
+      "image_size": "512x512",
+      "batch": 8,
+      "median_ms": 187.768,
+      "p5_ms": 140.755,
+      "p95_ms": 225.893,
+      "throughput_imgs_per_s": 42.6,
+      "n_iter": 20
+    },
+    {
+      "device": "cpu",
+      "image_size": "512x512",
+      "batch": 32,
+      "median_ms": 742.844,
+      "p5_ms": 679.04,
+      "p95_ms": 868.708,
+      "throughput_imgs_per_s": 43.1,
+      "n_iter": 20
+    },
+    {
+      "device": "cpu",
+      "image_size": "1024x1024",
+      "batch": 1,
+      "median_ms": 90.662,
+      "p5_ms": 76.248,
+      "p95_ms": 387.431,
+      "throughput_imgs_per_s": 11.0,
+      "n_iter": 20
+    },
+    {
+      "device": "cpu",
+      "image_size": "1024x1024",
+      "batch": 8,
+      "median_ms": 1075.898,
+      "p5_ms": 727.179,
+      "p95_ms": 1387.152,
+      "throughput_imgs_per_s": 7.4,
+      "n_iter": 20
+    },
+    {
+      "device": "cpu",
+      "image_size": "1024x1024",
+      "batch": 32,
+      "median_ms": 4520.808,
+      "p5_ms": 4289.228,
+      "p95_ms": 5382.455,
+      "throughput_imgs_per_s": 7.1,
+      "n_iter": 20
+    },
+    {
+      "device": "cuda (NVIDIA GeForce RTX 4080)",
+      "image_size": "256x256",
+      "batch": 1,
+      "median_ms": 3.372,
+      "p5_ms": 2.759,
+      "p95_ms": 4.619,
+      "throughput_imgs_per_s": 296.6,
+      "n_iter": 20
+    },
+    {
+      "device": "cuda (NVIDIA GeForce RTX 4080)",
+      "image_size": "256x256",
+      "batch": 8,
+      "median_ms": 14.43,
+      "p5_ms": 12.282,
+      "p95_ms": 15.513,
+      "throughput_imgs_per_s": 554.4,
+      "n_iter": 20
+    },
+    {
+      "device": "cuda (NVIDIA GeForce RTX 4080)",
+      "image_size": "256x256",
+      "batch": 32,
+      "median_ms": 52.529,
+      "p5_ms": 50.559,
+      "p95_ms": 62.509,
+      "throughput_imgs_per_s": 609.2,
+      "n_iter": 20
+    },
+    {
+      "device": "cuda (NVIDIA GeForce RTX 4080)",
+      "image_size": "512x512",
+      "batch": 1,
+      "median_ms": 7.317,
+      "p5_ms": 5.973,
+      "p95_ms": 8.62,
+      "throughput_imgs_per_s": 136.7,
+      "n_iter": 20
+    },
+    {
+      "device": "cuda (NVIDIA GeForce RTX 4080)",
+      "image_size": "512x512",
+      "batch": 8,
+      "median_ms": 47.318,
+      "p5_ms": 44.424,
+      "p95_ms": 49.786,
+      "throughput_imgs_per_s": 169.1,
+      "n_iter": 20
+    },
+    {
+      "device": "cuda (NVIDIA GeForce RTX 4080)",
+      "image_size": "512x512",
+      "batch": 32,
+      "median_ms": 185.052,
+      "p5_ms": 172.411,
+      "p95_ms": 197.026,
+      "throughput_imgs_per_s": 172.9,
+      "n_iter": 20
+    },
+    {
+      "device": "cuda (NVIDIA GeForce RTX 4080)",
+      "image_size": "1024x1024",
+      "batch": 1,
+      "median_ms": 23.857,
+      "p5_ms": 21.13,
+      "p95_ms": 25.307,
+      "throughput_imgs_per_s": 41.9,
+      "n_iter": 20
+    },
+    {
+      "device": "cuda (NVIDIA GeForce RTX 4080)",
+      "image_size": "1024x1024",
+      "batch": 8,
+      "median_ms": 192.986,
+      "p5_ms": 184.126,
+      "p95_ms": 204.006,
+      "throughput_imgs_per_s": 41.5,
+      "n_iter": 20
+    },
+    {
+      "device": "cuda (NVIDIA GeForce RTX 4080)",
+      "image_size": "1024x1024",
+      "batch": 32,
+      "median_ms": 713.239,
+      "p5_ms": 691.015,
+      "p95_ms": 773.021,
+      "throughput_imgs_per_s": 44.9,
+      "n_iter": 20
+    }
+  ]
+}

@@ -65,15 +65,53 @@ CPU is single-process (no `torch.set_num_threads` tuning); GPU uses one device.
 | **CUDA** | 1024×1024 | 8 | 202.1 | 40 |
 | **CUDA** | 1024×1024 | 32 | 775.2 | 41 |
 
-CPU→CUDA speedup at large batch:
-
-| Image | CPU bs=32 | CUDA bs=32 | Speedup |
-|---|---:|---:|---:|
-| 256×256 | 99 imgs/s | 532 imgs/s | **5.4×** |
-| 512×512 | 34 imgs/s | 150 imgs/s | **4.4×** |
-| 1024×1024 | 8 imgs/s | 41 imgs/s | **5.1×** |
-
 Raw JSON: [`results_5060ti.json`](results_5060ti.json).
+
+### Reference: NVIDIA RTX 4080 16GB
+
+| Device | Image | Batch | Throughput (imgs/s) |
+|---|---:|---:|---:|
+| CPU | 256×256 | 32 | 169 |
+| CPU | 512×512 | 32 | 43 |
+| CPU | 1024×1024 | 32 | 7 |
+| **CUDA** | 256×256 | 32 | **609** |
+| **CUDA** | 512×512 | 32 | **173** |
+| **CUDA** | 1024×1024 | 32 | **45** |
+
+Raw JSON: [`results_4080.json`](results_4080.json).
+
+### CPU → CUDA speedup at bs=32
+
+| Image | 5060 Ti CPU | 5060 Ti CUDA | 5060 Ti speedup | 4080 CPU | 4080 CUDA | 4080 speedup |
+|---|---:|---:|---:|---:|---:|---:|
+| 256×256 | 99 | 532 | **5.4×** | 169 | 609 | **3.6×** |
+| 512×512 | 34 | 150 | **4.4×** | 43 | 173 | **4.0×** |
+| 1024×1024 | 8 | 41 | **5.1×** | 7 | 45 | **6.4×** |
+
+### 4080 vs 5060 Ti CUDA (bs=32)
+
+| Image | 5060 Ti | 4080 | 4080 / 5060 Ti |
+|---|---:|---:|---:|
+| 256×256 | 532 | 609 | 1.14× |
+| 512×512 | 150 | 173 | 1.15× |
+| 1024×1024 | 41 | 45 | 1.10× |
+
+The 4080's raw compute is ~2× the 5060 Ti (49 vs 24 TFLOPs FP16), but
+end-to-end paraug throughput is only **10-15 % higher**. That's because the
+pipeline is **memory-bandwidth bound**, not FLOPs-bound — 4080 has 716 GB/s
+vs 5060 Ti's 448 GB/s, a 1.6× bandwidth ratio, which the observed 1.10-1.15×
+speedup is consistent with after accounting for kernel-launch overhead and
+host-side Python.
+
+Practical takeaway: **a 5060 Ti is already enough for typical augmentation
+workloads** — moving to a higher-end GPU gives diminishing returns for this
+class of op.
+
+> **CPU note**: the two CPU columns above measure two different host CPUs
+> (the 5060 Ti host vs the 4080 host), not paraug itself. CPU throughput
+> varies by CPU model / core count / single-thread perf / OS / Python build,
+> so cross-row CPU comparison is not paraug-attribution — focus on CUDA
+> rows for GPU-arch comparison.
 
 ## How to reproduce
 
