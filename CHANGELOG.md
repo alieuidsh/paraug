@@ -4,6 +4,22 @@ All notable changes to paraug are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-05-15
+
+### Added
+
+- README hero banner (`docs/banner.png`) and project logo (`docs/logo.png`).
+- Traditional Chinese translation: `README_zh-TW.md` with a language switcher
+  in the main README.
+- `.github/workflows/publish.yml` — OIDC trusted-publisher workflow that
+  builds an sdist + wheel and uploads to PyPI when a `v*` git tag is pushed.
+
+### Changed
+
+- Installation instructions now point to `pip install git+https://...` as the
+  primary path until the PyPI release is live, instead of the previous
+  unconditional `pip install paraug` (which would have failed).
+
 ## [0.1.0] - 2026-05-15
 
 Initial public release.

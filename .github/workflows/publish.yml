@@ -1,0 +1,46 @@
+name: publish to PyPI
+
+# Triggered when a git tag matching `v*` is pushed. Builds a wheel + sdist
+# from pyproject.toml and uploads to PyPI via OIDC trusted publisher (no API
+# token stored as a secret).
+#
+# Prerequisites on PyPI side:
+#   1. PyPI account exists for the project owner.
+#   2. PyPI "Trusted Publisher" configured for this repo:
+#         - Owner:        alieuidsh
+#         - Repository:   paraug
+#         - Workflow:     publish.yml
+#         - Environment:  pypi
+#      (Set via https://pypi.org/manage/account/publishing/ — for the first
+#      release the project entry doesn't exist yet, so use the "pending"
+#      publisher form to pre-authorise the first upload.)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/paraug/
+    permissions:
+      id-token: write   # OIDC token for PyPI trusted-publisher auth
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+      - name: Build sdist + wheel
+        run: python -m build
+      - name: Inspect dist/
+        run: ls -lh dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # No `password:` — OIDC via trusted publisher.
