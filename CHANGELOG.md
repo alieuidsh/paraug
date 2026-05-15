@@ -4,6 +4,25 @@ All notable changes to paraug are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-05-15
+
+### Added
+
+- `benchmarks/paraug_self.py` + `benchmarks/README.md` — self-benchmark
+  measuring median latency and throughput across CPU and CUDA on a
+  representative augmentation pipeline (affine + tps + gamma +
+  gaussian_blur + gaussian_noise). Initial reference table from an NVIDIA
+  RTX 5060 Ti is included; community PRs of additional hardware results
+  welcome.
+
+### Changed
+
+- CI workflows bumped to `actions/checkout@v5` and enable
+  `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` at workflow level to opt all
+  Node-based actions into the Node 24 runtime ahead of GitHub's
+  2026-06-02 default flip. Silences the deprecation warning seen in v0.1.1
+  Actions runs.
+
 ## [0.1.1] - 2026-05-15
 
 ### Added

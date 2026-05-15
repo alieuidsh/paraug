@@ -1,0 +1,226 @@
+{
+  "config": {
+    "geometric": {
+      "affine": {
+        "p": 1.0,
+        "rot_deg": 15.0,
+        "scale_range": [
+          0.9,
+          1.1
+        ]
+      },
+      "tps": {
+        "p": 1.0,
+        "max_disp": 12.0,
+        "n_ctrl": 5
+      }
+    },
+    "photometric": {
+      "gamma": {
+        "p": 1.0,
+        "gamma_range": [
+          0.8,
+          1.2
+        ]
+      },
+      "gaussian_blur": {
+        "p": 1.0,
+        "sigma_range": [
+          0.5,
+          2.0
+        ]
+      },
+      "gaussian_noise": {
+        "p": 1.0,
+        "sigma_range": [
+          0.005,
+          0.04
+        ]
+      }
+    }
+  },
+  "warmup": 5,
+  "iter": 20,
+  "results": [
+    {
+      "device": "cpu",
+      "image_size": "256x256",
+      "batch": 1,
+      "median_ms": 7.273,
+      "p5_ms": 4.516,
+      "p95_ms": 29.486,
+      "throughput_imgs_per_s": 137.5,
+      "n_iter": 20
+    },
+    {
+      "device": "cpu",
+      "image_size": "256x256",
+      "batch": 8,
+      "median_ms": 80.179,
+      "p5_ms": 55.857,
+      "p95_ms": 102.682,
+      "throughput_imgs_per_s": 99.8,
+      "n_iter": 20
+    },
+    {
+      "device": "cpu",
+      "image_size": "256x256",
+      "batch": 32,
+      "median_ms": 322.874,
+      "p5_ms": 261.205,
+      "p95_ms": 392.134,
+      "throughput_imgs_per_s": 99.1,
+      "n_iter": 20
+    },
+    {
+      "device": "cpu",
+      "image_size": "512x512",
+      "batch": 1,
+      "median_ms": 26.936,
+      "p5_ms": 16.686,
+      "p95_ms": 123.328,
+      "throughput_imgs_per_s": 37.1,
+      "n_iter": 20
+    },
+    {
+      "device": "cpu",
+      "image_size": "512x512",
+      "batch": 8,
+      "median_ms": 256.896,
+      "p5_ms": 171.882,
+      "p95_ms": 312.42,
+      "throughput_imgs_per_s": 31.1,
+      "n_iter": 20
+    },
+    {
+      "device": "cpu",
+      "image_size": "512x512",
+      "batch": 32,
+      "median_ms": 949.231,
+      "p5_ms": 888.012,
+      "p95_ms": 1028.27,
+      "throughput_imgs_per_s": 33.7,
+      "n_iter": 20
+    },
+    {
+      "device": "cpu",
+      "image_size": "1024x1024",
+      "batch": 1,
+      "median_ms": 107.797,
+      "p5_ms": 83.788,
+      "p95_ms": 357.256,
+      "throughput_imgs_per_s": 9.3,
+      "n_iter": 20
+    },
+    {
+      "device": "cpu",
+      "image_size": "1024x1024",
+      "batch": 8,
+      "median_ms": 934.314,
+      "p5_ms": 672.87,
+      "p95_ms": 1197.346,
+      "throughput_imgs_per_s": 8.6,
+      "n_iter": 20
+    },
+    {
+      "device": "cpu",
+      "image_size": "1024x1024",
+      "batch": 32,
+      "median_ms": 3995.794,
+      "p5_ms": 3545.698,
+      "p95_ms": 4536.519,
+      "throughput_imgs_per_s": 8.0,
+      "n_iter": 20
+    },
+    {
+      "device": "cuda (NVIDIA GeForce RTX 5060 Ti)",
+      "image_size": "256x256",
+      "batch": 1,
+      "median_ms": 3.277,
+      "p5_ms": 2.909,
+      "p95_ms": 5.086,
+      "throughput_imgs_per_s": 305.1,
+      "n_iter": 20
+    },
+    {
+      "device": "cuda (NVIDIA GeForce RTX 5060 Ti)",
+      "image_size": "256x256",
+      "batch": 8,
+      "median_ms": 17.312,
+      "p5_ms": 11.57,
+      "p95_ms": 21.875,
+      "throughput_imgs_per_s": 462.1,
+      "n_iter": 20
+    },
+    {
+      "device": "cuda (NVIDIA GeForce RTX 5060 Ti)",
+      "image_size": "256x256",
+      "batch": 32,
+      "median_ms": 60.154,
+      "p5_ms": 50.749,
+      "p95_ms": 77.529,
+      "throughput_imgs_per_s": 532.0,
+      "n_iter": 20
+    },
+    {
+      "device": "cuda (NVIDIA GeForce RTX 5060 Ti)",
+      "image_size": "512x512",
+      "batch": 1,
+      "median_ms": 9.395,
+      "p5_ms": 9.165,
+      "p95_ms": 9.711,
+      "throughput_imgs_per_s": 106.4,
+      "n_iter": 20
+    },
+    {
+      "device": "cuda (NVIDIA GeForce RTX 5060 Ti)",
+      "image_size": "512x512",
+      "batch": 8,
+      "median_ms": 45.729,
+      "p5_ms": 40.391,
+      "p95_ms": 61.918,
+      "throughput_imgs_per_s": 174.9,
+      "n_iter": 20
+    },
+    {
+      "device": "cuda (NVIDIA GeForce RTX 5060 Ti)",
+      "image_size": "512x512",
+      "batch": 32,
+      "median_ms": 213.842,
+      "p5_ms": 182.047,
+      "p95_ms": 245.737,
+      "throughput_imgs_per_s": 149.6,
+      "n_iter": 20
+    },
+    {
+      "device": "cuda (NVIDIA GeForce RTX 5060 Ti)",
+      "image_size": "1024x1024",
+      "batch": 1,
+      "median_ms": 28.98,
+      "p5_ms": 21.04,
+      "p95_ms": 30.481,
+      "throughput_imgs_per_s": 34.5,
+      "n_iter": 20
+    },
+    {
+      "device": "cuda (NVIDIA GeForce RTX 5060 Ti)",
+      "image_size": "1024x1024",
+      "batch": 8,
+      "median_ms": 202.055,
+      "p5_ms": 178.454,
+      "p95_ms": 238.646,
+      "throughput_imgs_per_s": 39.6,
+      "n_iter": 20
+    },
+    {
+      "device": "cuda (NVIDIA GeForce RTX 5060 Ti)",
+      "image_size": "1024x1024",
+      "batch": 32,
+      "median_ms": 775.235,
+      "p5_ms": 699.51,
+      "p95_ms": 862.741,
+      "throughput_imgs_per_s": 41.3,
+      "n_iter": 20
+    }
+  ]
+}

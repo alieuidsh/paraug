@@ -20,6 +20,9 @@ on:
     tags:
       - "v*"
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
@@ -29,7 +32,7 @@ jobs:
     permissions:
       id-token: write   # OIDC token for PyPI trusted-publisher auth
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
