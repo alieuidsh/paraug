@@ -1,9 +1,13 @@
 # paraug
 
+![paraug banner — CPU and GPU augmentation pipelines converging to a single bit-exact output](docs/banner.png)
+
 > **Bit-exact CPU/GPU parity for image augmentation.**
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.9-3.12](https://img.shields.io/badge/python-3.9--3.12-blue.svg)]()
+
+**Languages**: English | [繁體中文](README_zh-TW.md)
 
 `paraug` is a PyTorch-native augmentation library that guarantees **the same
 seed produces the same output on CPU and CUDA**. Per-primitive RNG is sampled
