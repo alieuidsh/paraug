@@ -37,11 +37,14 @@ and routing only the deterministic torch ops through device. Tolerance:
 ## Installation
 
 ```bash
-pip install git+https://github.com/alieuidsh/paraug.git
+pip install paraug
 ```
 
-> PyPI release (`pip install paraug`) coming once the v0.1.x publish workflow
-> is wired up — see issue tracker for status.
+Or from source:
+
+```bash
+pip install git+https://github.com/alieuidsh/paraug.git
+```
 
 ## Quickstart
 

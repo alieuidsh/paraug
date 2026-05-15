@@ -33,11 +33,14 @@ deterministic 的 torch 運算 route 到 device。容差：
 ## 安裝
 
 ```bash
-pip install git+https://github.com/alieuidsh/paraug.git
+pip install paraug
 ```
 
-> PyPI 發佈版（`pip install paraug`）等 v0.1.x publish workflow 設好後上線
-> — 進度看 issue tracker。
+或從原始碼安裝：
+
+```bash
+pip install git+https://github.com/alieuidsh/paraug.git
+```
 
 ## 快速上手
 
