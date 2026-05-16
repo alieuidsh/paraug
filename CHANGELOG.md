@@ -4,6 +4,41 @@ All notable changes to paraug are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-05-17
+
+### Added
+
+- **Multi-channel `AugPipeline` input** — `AugPipeline(config, n_image_channels=N)`
+  opts the call into channel-wise role-splitting. The first `N` leading
+  channels are treated as "image" (geometric + photometric), the remaining
+  channels are treated as extra spatial data that follows the geometric
+  warp **but skips photometric perturbations**. Use case: stack GT
+  heatmap/distance/tangent fields onto the image tensor so they share the
+  back-warp grid for free, eliminating the need for a separate forward-warp
+  solver downstream. `random_shadow` is correctly re-classified as
+  photometric for the split (its dispatch is geometric but its effect is
+  multiplicative, so extra channels see only true geometry).
+- `tests/test_n_image_channels.py` — 7 unit tests covering: default
+  back-compat (None) for any channel count, explicit `n_image_channels`
+  split, photometric skip on extra channels, `random_shadow` re-routing,
+  and validation on invalid values.
+- `tests/test_pixel_position_consistency.py` — 6 guardrail tests verifying
+  paraug's internal grid is shared between `img` and `mask` (img bilinear
+  vs mask nearest stay within the 0.5 px quantisation bound). Useful for
+  catching regressions in the geometric primitives' grid wiring.
+
+### Changed
+
+- `AugPipeline.__init__` gains `n_image_channels: int | None = None`. Default
+  `None` preserves prior behaviour for any input channel count (no split).
+  Explicit `int` enables the split.
+
+### Compatibility
+
+- **No breaking changes**: every existing call site continues to work
+  unchanged. The new kwarg is opt-in via explicit `n_image_channels=`. Test
+  suite grew from 88 to 95 tests, all passing.
+
 ## [0.1.2] - 2026-05-15
 
 ### Added

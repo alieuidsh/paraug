@@ -18,7 +18,7 @@ from .utils import set_deterministic, per_item_seed, cpu_generator
 from .geometric import GEOMETRIC_PRIMITIVES
 from .photometric import PHOTOMETRIC_PRIMITIVES
 
-__version__ = "0.1.2"
+__version__ = "0.3.0"
 
 __all__ = [
     "AugPipeline",

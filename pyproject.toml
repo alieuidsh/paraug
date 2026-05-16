@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "paraug"
-version = "0.1.2"
+version = "0.3.0"
 description = "Parity Augmentation — bit-exact CPU/GPU parity for image augmentation"
 readme = "README.md"
 license = "Apache-2.0"

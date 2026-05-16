@@ -79,6 +79,46 @@ img_cuda, mask_cuda = aug(img_gpu, mask=mask_gpu, seed_base=42, epoch=0, step=0)
 assert (img_out - img_cuda.cpu()).abs().max() < 2e-4
 ```
 
+## Stacking extra spatial channels (GT-as-channel)
+
+`n_image_channels=N` declares that the first N input channels are the
+"image" (geometric + photometric) and any remaining channels follow
+geometric warp only. Photometric primitives skip the extra channels, so
+stacked ground-truth fields stay numerically intact while sharing the
+exact back-warp grid as the image:
+
+```python
+import torch
+from paraug import AugPipeline
+
+# (B, 3, H, W) RGB + (B, 2, H, W) full-image heatmap GT = 5 channels.
+img_rgb  = torch.rand(2, 3, 256, 256)
+gt_h     = render_h_line_heatmap(...)   # your renderer; (B, 1, H, W)
+gt_v     = render_v_line_heatmap(...)   # (B, 1, H, W)
+img_5ch  = torch.cat([img_rgb, gt_h, gt_v], dim=1)   # (B, 5, H, W)
+
+aug = AugPipeline({
+    "geometric":   {"affine": {"p": 1.0, "rot_deg": 10.0},
+                      "tps":    {"p": 0.5, "max_disp": 8.0, "n_ctrl": 5}},
+    "photometric": {"gamma": {"p": 0.5, "gamma_range": (0.8, 1.2)}},
+}, n_image_channels=3)
+
+out, _ = aug(img_5ch, seed_base=42)
+# out[:, :3] = warped + gamma-corrected RGB
+# out[:, 3:] = warped (only) heatmap — gamma did NOT touch it
+```
+
+This eliminates a common pain point in tasks where GT is a 2-D field (line
+heatmaps, segmentation masks with continuous labels, distance transforms,
+tangent fields): instead of solving a separate forward-warp problem for
+GT, render GT as image channels, stack, and let `grid_sample` warp
+everything in one pass. The default `n_image_channels=None` preserves the
+prior behaviour for callers that don't need the split.
+
+`random_shadow` is geometric in dispatch but multiplicative in effect; the
+split correctly treats it as photometric so extra channels are not dimmed
+by the shadow factor.
+
 ## Primitives
 
 ### Geometric (7)

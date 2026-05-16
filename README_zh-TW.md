@@ -75,6 +75,42 @@ img_cuda, mask_cuda = aug(img_gpu, mask=mask_gpu, seed_base=42, epoch=0, step=0)
 assert (img_out - img_cuda.cpu()).abs().max() < 2e-4
 ```
 
+## 把 GT 當 image 額外 channel 一起 warp
+
+`n_image_channels=N` 宣告：前 N 個 channel 視為「image」（geometric +
+photometric 都套），其餘 channel 只走 geometric warp。Photometric primitive
+會 skip 額外 channel，所以堆疊在 image 上的 ground-truth field 數值不會被
+gamma / noise / shadow 動到，卻又共用同一張 back-warp grid：
+
+```python
+import torch
+from paraug import AugPipeline
+
+# (B, 3, H, W) RGB + (B, 2, H, W) 整張影像 heatmap GT = 5 channel
+img_rgb  = torch.rand(2, 3, 256, 256)
+gt_h     = render_h_line_heatmap(...)   # 自己的 renderer; (B, 1, H, W)
+gt_v     = render_v_line_heatmap(...)   # (B, 1, H, W)
+img_5ch  = torch.cat([img_rgb, gt_h, gt_v], dim=1)   # (B, 5, H, W)
+
+aug = AugPipeline({
+    "geometric":   {"affine": {"p": 1.0, "rot_deg": 10.0},
+                      "tps":    {"p": 0.5, "max_disp": 8.0, "n_ctrl": 5}},
+    "photometric": {"gamma": {"p": 0.5, "gamma_range": (0.8, 1.2)}},
+}, n_image_channels=3)
+
+out, _ = aug(img_5ch, seed_base=42)
+# out[:, :3] = warp + gamma 後的 RGB
+# out[:, 3:] = 只 warp 沒 gamma 的 heatmap
+```
+
+GT 是 2-D field 的任務（line heatmap、連續標籤分割、distance transform、
+切線場）原本要解 forward-warp 才能跟著 image 對齊，現在直接把 GT 當 channel
+堆上去 + 同一次 `grid_sample`，省下整套 forward-warp solver。預設
+`n_image_channels=None` 保留原本行為，沒設就不切。
+
+`random_shadow` 雖然 dispatch 屬 geometric，但效果是乘法的 photometric，
+split 啟動時會被當 photometric 處理（不會把陰影因子套在 GT channel 上）。
+
 ## Primitive 列表
 
 ### Geometric（7 個）
