@@ -4,6 +4,62 @@ All notable changes to paraug are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-05-17
+
+### Changed
+
+- `tests/test_pixel_position_consistency.py` now encodes BOTH source x and
+  source y in the mask (via packed cell-id `x + y·W`) and asserts the
+  img/mask grid agreement on both axes. The v0.3.0 test only validated
+  source x, which would have silently missed a y-axis grid mismatch
+  between img-bilinear and mask-nearest under a regression.
+- `tests/test_n_image_channels.py::test_extra_channels_geometric_warped_same_grid`
+  now encodes pixel POSITION per channel (x in even channels, y in odd)
+  instead of a per-channel constant. A constant can't distinguish a shared
+  grid from a per-channel-divergent grid (both leave constants unchanged);
+  position-encoded values shift differently under different grids, so
+  divergence is detectable.
+
+### Added
+
+- `tests/test_n_image_channels.py::test_photometric_returns_same_mask_object`
+  — pins the photometric-primitive contract that `mask` is passed through
+  by object identity, not just by value. Future contributors who replace
+  `mask` with a new tensor (even one equal to the input) fail CI before
+  mask-aware downstream pipelines see corrupted semantics.
+
+### Documentation
+
+- README / README_zh-TW: new "Sampling-mode note" subsection under
+  "Stacking extra spatial channels" — extra channels are bilinear-sampled
+  like img; `mask` is nearest-sampled. Discrete labels / class IDs must
+  go through `mask`, not stacked extra channels.
+
+### Fixes (downstream consumers — `ecg_aug.multi_channel_v2`)
+
+These are external to paraug's published surface but are part of the
+same 2026-05-17 review pass against the multi-channel GT path:
+
+- **Edge-strip θ bias**: the per-strip slope extraction divided by a
+  fixed `2·slope_step_px` denominator. At strips within `slope_step_px`
+  pixels of an image edge, the ±-offset column samples clamped to the
+  same boundary column — so the actual sample distance shrank to
+  `slope_step_px` (or 0 at the very edge), but the slope was still
+  divided by the original `2·slope_step_px`, yielding a wrong-by-factor
+  estimate (or 0 at the corner where the distance collapsed entirely).
+  Fixed: divide slope by the per-strip ACTUAL span (`x_hi − x_lo`); mark
+  `thmask=0` where the span collapses to 0 so the downstream loss
+  doesn't supervise on a phantom θ.
+- **Phantom line "tails"**: rendering a short line segment used a clamped
+  `frac` so the line's endpoint y was held constant outside the segment's
+  x-range. The Gaussian then rendered a continuous ridge stretching across
+  the whole image at that y. Fixed: out-of-range positions are pushed to
+  +inf so the Gaussian decays to zero.
+- Removed the unused `peak_thresh` kwarg from `extract_per_strip_gt_v2`.
+- Added explicit guards: `H < 3` / `W < 3` and `slope_step_px < 1` now
+  raise `ValueError` instead of silently breaking the sub-pixel parabolic
+  refinement at index 0.
+
 ## [0.3.0] - 2026-05-17
 
 ### Added

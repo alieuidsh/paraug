@@ -62,9 +62,11 @@ VALID_THRESH = 0.9999
 
 def _encoded_img_and_mask():
     """img: 3-channel (R=x/(W-1), G=y/(H-1), B=1.0 validity).
-    mask: 1-channel encoding x + y*(W) packed as float so we can decode it back.
-    Use mask = x / (W - 1) (single axis); paraug masks are (B, 1, H, W).
-    """
+    mask: 1-channel encoding (x + y·W) / (W·H − 1) so a single nearest sample
+    can be decoded back into both source x and source y. Lets the test catch
+    grid mismatches on either axis (x-only encoding would silently miss a
+    y-axis grid bug, since the y-coordinate of the source isn't recorded
+    in the mask)."""
     yy, xx = torch.meshgrid(
         torch.arange(H, dtype=DTYPE),
         torch.arange(W, dtype=DTYPE),
@@ -74,41 +76,50 @@ def _encoded_img_and_mask():
     g = yy / (H - 1)
     b = torch.ones_like(r)
     img = torch.stack([r, g, b], dim=0).unsqueeze(0)
-    mask_x = (xx / (W - 1)).unsqueeze(0).unsqueeze(0)
-    return img.to(DEVICE), mask_x.to(DEVICE)
+    # mask values: integer cell id = x + y·W, in [0, W·H − 1]. Normalised to
+    # [0, 1] for float storage; decode by multiplying by (W·H − 1) and
+    # splitting via // W and % W.
+    cell_id = (xx + yy * W).to(DTYPE)
+    mask = (cell_id / (W * H - 1)).unsqueeze(0).unsqueeze(0)
+    return img.to(DEVICE), mask.to(DEVICE)
 
 
 @pytest.mark.parametrize("primitive,spec", list(PRIMITIVE_SPECS.items()))
 def test_img_mask_grid_sync(primitive, spec):
-    """img bilinear and mask nearest must come from the same grid."""
+    """img bilinear and mask nearest must come from the SAME grid for BOTH
+    axes. Compares both the source x-coordinate (img channel 0 bilinear vs
+    mask cell-id nearest → x) and the source y-coordinate (img channel 1
+    vs mask cell-id → y); each must agree to within the 0.5 px nearest
+    quantisation bound."""
     img, mask = _encoded_img_and_mask()
     aug = AugPipeline({"geometric": {primitive: spec}})
     img_out, mask_out = aug(img, mask=mask, seed_base=SEED_BASE)
 
-    # Both outputs encode the SRC x-coord (img channel 0, mask channel 0).
-    # Restrict to pixels where the back-warp bilinear stayed fully inside src
-    # (validity > VALID_THRESH); otherwise padded-zero contaminates the
-    # linear encoding and the decoded x is artificially pulled toward 0.
     valid = img_out[0, 2] > VALID_THRESH
+    # Decode mask cell id → (sx, sy).
+    mask_cell = (mask_out[0, 0] * (W * H - 1)).round()
+    decoded_mask_x = mask_cell % W
+    decoded_mask_y = mask_cell // W
     decoded_img_x = img_out[0, 0] * (W - 1)
-    decoded_mask_x = mask_out[0, 0] * (W - 1)
-    diff = (decoded_img_x - decoded_mask_x).abs()
+    decoded_img_y = img_out[0, 1] * (H - 1)
+    diff_x = (decoded_img_x - decoded_mask_x).abs()
+    diff_y = (decoded_img_y - decoded_mask_y).abs()
 
-    diff_valid = diff[valid]
-    if diff_valid.numel() == 0:
+    if not valid.any():
         pytest.skip(f"{primitive}: 0 valid pixels (entirely padded)")
-    max_diff = float(diff_valid.max().item())
-    mean_diff = float(diff_valid.mean().item())
-    assert max_diff < MAX_DIFF_PX, (
-        f"{primitive}: img/mask src-x disagree by max={max_diff:.3f}px "
-        f"(mean={mean_diff:.3f}, n_valid={int(valid.sum().item())}). "
-        f"This means img and mask were warped with different grids."
-    )
+    max_dx = float(diff_x[valid].max().item())
+    max_dy = float(diff_y[valid].max().item())
+    assert max_dx < MAX_DIFF_PX, (
+        f"{primitive}: img/mask src-x disagree by max={max_dx:.3f}px — "
+        f"x-axis grid mismatch between img bilinear and mask nearest.")
+    assert max_dy < MAX_DIFF_PX, (
+        f"{primitive}: img/mask src-y disagree by max={max_dy:.3f}px — "
+        f"y-axis grid mismatch between img bilinear and mask nearest.")
 
 
 if __name__ == "__main__":
-    print(f"device={DEVICE}  H={H} W={W}  acceptance < {MAX_DIFF_PX} px\n")
-    header = f"{'primitive':<20} {'max':>10} {'mean':>10} {'n_valid':>10} {'verdict':>8}"
+    print(f"device={DEVICE}  H={H} W={W}  acceptance < {MAX_DIFF_PX} px (both axes)\n")
+    header = f"{'primitive':<20} {'max_dx':>10} {'max_dy':>10} {'n_valid':>10} {'verdict':>8}"
     print(header)
     print("-" * len(header))
     for name, spec in PRIMITIVE_SPECS.items():
@@ -116,9 +127,12 @@ if __name__ == "__main__":
         aug = AugPipeline({"geometric": {name: spec}})
         img_out, mask_out = aug(img, mask=mask, seed_base=SEED_BASE)
         valid = img_out[0, 2] > VALID_THRESH
-        diff = ((img_out[0, 0] - mask_out[0, 0]).abs() * (W - 1))[valid]
-        max_d = float(diff.max().item()) if diff.numel() else 0.0
-        mean_d = float(diff.mean().item()) if diff.numel() else 0.0
-        verdict = "PASS" if max_d < MAX_DIFF_PX else "FAIL"
-        print(f"{name:<20} {max_d:>10.4f} {mean_d:>10.4f} "
+        mask_cell = (mask_out[0, 0] * (W * H - 1)).round()
+        mx = mask_cell % W; my = mask_cell // W
+        dx = ((img_out[0, 0] * (W - 1) - mx).abs())[valid]
+        dy = ((img_out[0, 1] * (H - 1) - my).abs())[valid]
+        max_dx = float(dx.max().item()) if dx.numel() else 0.0
+        max_dy = float(dy.max().item()) if dy.numel() else 0.0
+        verdict = "PASS" if max(max_dx, max_dy) < MAX_DIFF_PX else "FAIL"
+        print(f"{name:<20} {max_dx:>10.4f} {max_dy:>10.4f} "
               f"{int(valid.sum().item()):>10} {verdict:>8}")

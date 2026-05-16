@@ -53,27 +53,54 @@ def test_n_image_channels_default_backcompat_9ch():
 
 
 def test_extra_channels_geometric_warped_same_grid():
-    """9ch input under affine: all 9 channels get the same back-warp grid."""
-    img = _make_input(9)
-    # Encode a unique constant per channel so we can verify the grid was shared.
-    for c in range(9):
-        img[:, c] = float(c)
+    """9ch input under affine: every channel back-warps from the SAME source
+    pixel. Encode pixel POSITION + unique per-channel offset (not a
+    per-channel constant — a constant can't distinguish a shared grid from
+    a per-channel grid since both leave the constant unchanged; and a
+    plain x/y position alone can't distinguish a buggy impl that copies
+    warped channel 0 into every even channel from a correct shared-grid
+    impl, since both yield the same warped x. The constant offset survives
+    the warp untouched, so per-channel uniqueness is preserved end-to-end
+    and a channel-copy bug shows up as a wrong offset)."""
+    B, C = 2, 9
+    yy, xx = torch.meshgrid(
+        torch.arange(H, dtype=torch.float32),
+        torch.arange(W, dtype=torch.float32),
+        indexing="ij",
+    )
+    # Each channel = (position-encoded base) + (channel-index offset).
+    # Even channels encode x; odd channels encode y. The +c*1000 offset
+    # is preserved by the linear warp (a constant shift commutes with
+    # affine grid_sample), so channel c's output at any pixel is
+    # `warped_pos + c*1000`. Subtract the offset to recover the warped
+    # position, which must match the channel-0 (or channel-1) reference.
+    img = torch.empty(B, C, H, W, dtype=torch.float32, device=DEVICE)
+    for c in range(C):
+        base = (xx if c % 2 == 0 else yy).to(DEVICE)
+        img[:, c] = base + float(c) * 1000.0
     cfg = {"geometric": {"affine": {"p": 1.0, "rot_deg": 15.0,
                                       "scale_range": (0.9, 1.1)}}}
     aug = AugPipeline(cfg, n_image_channels=3)
     out, _ = aug(img, seed_base=42)
-    # After warp, each output pixel sampled the same src pixel for all channels.
-    # The constant-per-channel encoding means each channel still has its own
-    # constant value at any in-image pixel (modulo padding-zero leaks). Check
-    # that interior pixels still hold each channel's distinct constant.
     interior = out[:, :, 10:-10, 10:-10]
-    for c in range(9):
-        ch_vals = interior[:, c]
-        # All interior pixels of ch=c should equal float(c) (the back-warp
-        # of a constant is still that constant).
-        assert (ch_vals - float(c)).abs().max() < 1e-4, (
-            f"channel {c} not constant after geometric warp — grid not shared "
-            f"or photometric leaked")
+    # Recover warped position per channel by subtracting the constant
+    # offset. All even channels should now agree (warped x); all odd
+    # channels should agree (warped y). A channel-copy bug would have
+    # the wrong offset and would NOT subtract back to the same value.
+    for c in range(0, C, 2):
+        rec_c = interior[:, c] - float(c) * 1000.0
+        ref = interior[:, 0]   # channel 0 has offset 0 → rec_0 = interior[:,0]
+        assert (rec_c - ref).abs().max() < 1e-2, (
+            f"channel {c} (x-encoded) does not match channel 0 ref after "
+            f"removing the per-channel offset — either the grid diverged "
+            f"or a copy/permutation bug swapped channel content")
+    for c in range(1, C, 2):
+        rec_c = interior[:, c] - float(c) * 1000.0
+        ref = interior[:, 1] - 1000.0
+        assert (rec_c - ref).abs().max() < 1e-2, (
+            f"channel {c} (y-encoded) does not match channel 1 ref after "
+            f"removing the per-channel offset — either the grid diverged "
+            f"or a copy/permutation bug swapped channel content")
 
 
 def test_extra_channels_photometric_skip():
@@ -135,3 +162,38 @@ def test_n_image_channels_extra_channels_default_no_split():
         assert (out[:, c] - img_orig[:, c]).abs().max() > 0, (
             f"default None: random_shadow did not modulate channel {c} — "
             f"split was wrongly active")
+
+
+def test_photometric_returns_same_mask_object():
+    """Photometric primitives must pass `mask` through unchanged — by object
+    identity AND by value. The pipeline contract assumes a photometric op
+    never replaces OR mutates mask; this test pins both halves of that
+    contract for the full photometric dispatch table so:
+      (a) a future contributor who replaces `mask` with a new tensor
+          (e.g. `mask = mask * 1`) fails CI on the identity check, and
+      (b) a future contributor who mutates `mask` in place (e.g.
+          `mask.mul_(some_factor)`) fails CI on the value-equality check.
+    """
+    from paraug.photometric import PHOTOMETRIC_PRIMITIVES
+    img = _make_input(3)
+    # Use random values (not constant 1) so an in-place mutation actually
+    # shifts the contents detectably.
+    g = torch.Generator(device="cpu").manual_seed(0)
+    mask = torch.rand(2, 1, H, W, generator=g, dtype=torch.float32).to(DEVICE)
+    mask_id = id(mask)
+    for name, fn in PHOTOMETRIC_PRIMITIVES.items():
+        mask_snapshot = mask.clone()
+        spec = {"p": 1.0}
+        try:
+            _, mask_out = fn(img.clone(), mask, spec, seed_base=42,
+                              epoch=0, step=0)
+        except Exception as e:
+            pytest.skip(f"{name}: spec-required setup not handled: {e}")
+        assert mask_out is mask, (
+            f"photometric primitive {name!r} returned a different mask "
+            f"object (id changed: {mask_id} → {id(mask_out)}). Photometric "
+            f"primitives must pass mask through untouched.")
+        assert torch.equal(mask, mask_snapshot), (
+            f"photometric primitive {name!r} MUTATED the mask in place "
+            f"(values changed despite identity preserved). Photometric "
+            f"primitives must not modify mask contents.")

@@ -111,6 +111,21 @@ GT 是 2-D field 的任務（line heatmap、連續標籤分割、distance transf
 `random_shadow` 雖然 dispatch 屬 geometric，但效果是乘法的 photometric，
 split 啟動時會被當 photometric 處理（不會把陰影因子套在 GT channel 上）。
 
+### Sampling mode 說明（`mask` vs 額外 channel）
+
+堆在 `img` 後面的額外 channel **跟 image 一樣 bilinear interpolation**。如果
+你的 GT 是整數 class label / segmentation ID 不能線性插值，要走
+**nearest**，要把那個 tensor 用 `mask=` 參數傳，不要塞進 `img`：
+
+| 路徑 | Interpolation | 套 photometric 嗎 | Channel 數 |
+|------|--------------|------------------|-----------|
+| `img[:, :n_image_channels]` (RGB / image) | bilinear | 套 | 任意 |
+| `img[:, n_image_channels:]` (額外) | bilinear | **不套** | 任意 |
+| `mask` 參數 | **nearest** | 不套 | 1 (單通道) |
+
+paraug 的 geometric primitive 對 `img` 跟 `mask` 用同一個 back-warp grid，
+只差在 interpolation mode。Photometric primitive 永遠不動 `mask`。
+
 ## Primitive 列表
 
 ### Geometric（7 個）

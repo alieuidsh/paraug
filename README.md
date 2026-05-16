@@ -119,6 +119,24 @@ prior behaviour for callers that don't need the split.
 split correctly treats it as photometric so extra channels are not dimmed
 by the shadow factor.
 
+### Sampling-mode note (`mask` vs extra channels)
+
+Extra channels stacked onto `img` are sampled with **bilinear**
+interpolation — same as the image. If you need **nearest** interpolation
+(e.g. integer class labels or segmentation IDs that must not be
+interpolated), pass that tensor as the `mask=` argument instead of
+stacking it onto `img`:
+
+| Path | Interp | Photometric applied? | Channel count |
+|------|--------|----------------------|---------------|
+| `img[:, :n_image_channels]` (RGB / image) | bilinear | yes | any |
+| `img[:, n_image_channels:]` (extra) | bilinear | **no** | any |
+| `mask` argument | **nearest** | no | 1 (single-channel) |
+
+paraug warps `img` and `mask` with the same back-warp grid in every
+geometric primitive — only the interpolation mode differs. Photometric
+primitives never modify `mask`.
+
 ## Primitives
 
 ### Geometric (7)
