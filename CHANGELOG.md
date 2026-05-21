@@ -4,6 +4,51 @@ All notable changes to paraug are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-05-22
+
+### Added
+
+- **`AugPipeline.compose(foreground, background, mask)`** — blend a
+  foreground onto a background through a mask, then run the configured
+  aug. Data flow: (1) geometric primitives warp `(foreground, mask)`
+  together while the background stays static, (2) blend
+  `composite = fg_w * mask_w + background * (1 - mask_w)`, (3) photometric
+  primitives perturb the composite, (4) optional `canvas_size` stretch.
+  Accepts numpy `(H, W, C)` uint8/float arrays *or* torch tensors;
+  output type matches the foreground input type. Building block for
+  layered synthesis — e.g. "content printed on paper, then paper
+  photographed in a scene" is two `compose` calls (pass-1 output becomes
+  pass-2 foreground).
+- **`canvas_size=(H, W)`** kwarg on `AugPipeline.__init__` — conforms
+  every `__call__` / `compose` output to a fixed size via non-uniform
+  `F.interpolate` stretch (input aspect ratio is NOT preserved; this is
+  intentional for downstream uniform batching of variable-size inputs).
+  Default `None` keeps output size equal to input size.
+- `compose(..., return_transform=True)` returns a `transform` dict
+  (`canvas_size`, `scale_x`, `scale_y`) so callers whose ground truth is
+  stored as coordinates outside the tensor can rescale it consistently
+  with the canvas stretch. (GT carried inside the tensor — a mask, or
+  channels stacked via `n_image_channels` — rides the resize for free.)
+- `tests/test_compose.py` — 15 tests covering blend correctness (numpy
+  and tensor I/O), geometric/photometric application, canvas stretch on
+  both `__call__` and `compose`, the transform dict, layered two-call
+  synthesis (with and without canvas_size), background/mask auto-resize
+  to the foreground frame, validation errors, and CPU/CUDA parity.
+- `examples/04_compose_layered.py` — runnable two-pass layered-synthesis
+  demo.
+
+### Changed
+
+- `__call__`'s geometric and photometric loops are factored into private
+  `_apply_geometric` / `_apply_photometric` methods, shared with
+  `compose`. No behaviour change for existing `__call__` callers.
+
+### Compatibility
+
+- **No breaking changes.** `compose` and `canvas_size` are additive;
+  every existing `AugPipeline(config)` / `aug(img, mask, ...)` call site
+  behaves identically. Test suite grew 96 → 111, all passing.
+
 ## [0.3.1] - 2026-05-17
 
 ### Changed

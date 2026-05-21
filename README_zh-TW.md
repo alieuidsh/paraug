@@ -75,6 +75,65 @@ img_cuda, mask_cuda = aug(img_gpu, mask=mask_gpu, seed_base=42, epoch=0, step=0)
 assert (img_out - img_cuda.cpu()).abs().max() < 2e-4
 ```
 
+## 合成：`compose(foreground, background, mask)`
+
+`compose` 透過 mask 把 foreground 貼到 background 上，再套設定好的 aug：
+
+```python
+from paraug import AugPipeline
+
+aug = AugPipeline({
+    "geometric":   {"affine": {"p": 1.0, "rot_deg": 10.0}},
+    "photometric": {"gamma": {"p": 0.5}},
+})
+
+# numpy (H, W, 3) uint8 進 → numpy 出（也接受 torch tensor）
+img, mask = aug.compose(
+    foreground = paper_image,   # 要貼上去的紙
+    background = scene_image,   # 靜態背景
+    mask       = paper_mask,    # 255 = foreground、0 = background
+)
+```
+
+資料流程：
+
+1. **geometric** primitive 把 `(foreground, mask)` 一起 warp — 前景紙張
+   旋轉 / 縮放 / 扭曲，背景維持不動。
+2. **blend** — `composite = fg_w * mask_w + background * (1 - mask_w)`。
+3. **photometric** primitive 擾動 composite。
+4. 選用的 **`canvas_size`** stretch（見下）。
+
+**多層合成**就是呼叫兩次 `compose` — 第一次的輸出當第二次的 foreground：
+
+```python
+# 「內容印在紙上 → 紙在場景中被拍照」
+img1, m1 = aug.compose(content, paper_tone, content_mask)   # 列印
+img2, m2 = aug.compose(img1,    scene_bg,   paper_mask)      # 拍照
+```
+
+兩個 pass 要套不同 aug 的話，用兩個 `AugPipeline` 實例。
+
+## 固定輸出尺寸：`canvas_size`
+
+```python
+aug = AugPipeline(config, canvas_size=(512, 512))
+```
+
+每個 `__call__` / `compose` 輸出都會用非等比 `F.interpolate` 拉成
+`(512, 512)` — **不保留**輸入長寬比。當下游 batch 需要統一尺寸、且任務在
+stretch 下保持一致時（train 跟 inference 都拉到同一個 canvas，model 在
+canvas 空間裡學）這是對的選擇。預設 `None` 讓輸出尺寸等於輸入。
+
+存在 tensor **內**的 GT（`mask`，或用 `n_image_channels` 疊上去的 channel）
+會跟著 image 一起 stretch，免費。若 GT 是存 tensor **外**的座標，`compose`
+傳 `return_transform=True`，用回傳的 `scale_x` / `scale_y` 換算：
+
+```python
+img, mask, t = aug.compose(fg, bg, m, return_transform=True)
+line_x = [x * t["scale_x"] for x in line_x]
+line_y = [y * t["scale_y"] for y in line_y]
+```
+
 ## 把 GT 當 image 額外 channel 一起 warp
 
 `n_image_channels=N` 宣告：前 N 個 channel 視為「image」（geometric +

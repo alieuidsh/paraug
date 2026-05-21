@@ -79,6 +79,72 @@ img_cuda, mask_cuda = aug(img_gpu, mask=mask_gpu, seed_base=42, epoch=0, step=0)
 assert (img_out - img_cuda.cpu()).abs().max() < 2e-4
 ```
 
+## Compositing: `compose(foreground, background, mask)`
+
+`compose` blends a foreground onto a background through a mask, then runs
+the configured aug:
+
+```python
+from paraug import AugPipeline
+
+aug = AugPipeline({
+    "geometric":   {"affine": {"p": 1.0, "rot_deg": 10.0}},
+    "photometric": {"gamma": {"p": 0.5}},
+})
+
+# numpy (H, W, 3) uint8 in → numpy out  (also accepts torch tensors)
+img, mask = aug.compose(
+    foreground = paper_image,   # the sheet to paste
+    background = scene_image,   # the static backdrop
+    mask       = paper_mask,    # 255 = foreground, 0 = background
+)
+```
+
+Data flow:
+
+1. **geometric** primitives warp `(foreground, mask)` together — the
+   foreground sheet rotates / scales / warps while the background stays
+   put.
+2. **blend** — `composite = fg_w * mask_w + background * (1 - mask_w)`.
+3. **photometric** primitives perturb the composite.
+4. optional **`canvas_size`** stretch (see below).
+
+**Layered synthesis** is just two `compose` calls — pass-1 output becomes
+pass-2's foreground:
+
+```python
+# "content printed on paper, then paper photographed in a scene"
+img1, m1 = aug.compose(content, paper_tone, content_mask)   # printing
+img2, m2 = aug.compose(img1,    scene_bg,   paper_mask)      # photographing
+```
+
+Use two `AugPipeline` instances if the two passes need different aug.
+
+## Fixed output size: `canvas_size`
+
+```python
+aug = AugPipeline(config, canvas_size=(512, 512))
+```
+
+Every `__call__` / `compose` output is stretched to `(512, 512)` with a
+non-uniform `F.interpolate` — input aspect ratio is **not** preserved.
+This is the right choice when downstream batching needs uniform shapes
+and the task is consistent under stretch (train and inference both
+stretch to the same canvas, so the model learns in canvas space).
+Default `None` keeps the output size equal to the input.
+
+Ground truth carried **inside** the tensor — the `mask`, or channels
+stacked via `n_image_channels` — is stretched alongside the image for
+free. For GT stored as coordinates **outside** the tensor, pass
+`return_transform=True` to `compose` and rescale with the returned
+`scale_x` / `scale_y`:
+
+```python
+img, mask, t = aug.compose(fg, bg, m, return_transform=True)
+line_x = [x * t["scale_x"] for x in line_x]
+line_y = [y * t["scale_y"] for y in line_y]
+```
+
 ## Stacking extra spatial channels (GT-as-channel)
 
 `n_image_channels=N` declares that the first N input channels are the
