@@ -134,6 +134,57 @@ line_x = [x * t["scale_x"] for x in line_x]
 line_y = [y * t["scale_y"] for y in line_y]
 ```
 
+## 巢狀矩形 layout：`place_into_canvas`
+
+分割目標如果是**更大畫面中的子區域** —— 例如 ECG 內容矩形在紙裡、紙又在桌上 ——
+模型需要學「外圈矩形是干擾物要忽略」。沒做隨機 layout, 訓練資料每個 sample
+都是「內容貼滿整張圖」, 推理時模型會把整張紙 (甚至紙+桌面) 都標成 foreground。
+
+`place_into_canvas` 把 foreground (跟 mask) 放在更大畫布的隨機位置, 周圍填
+constant 顏色, 邊距隨機:
+
+```python
+from paraug import place_into_canvas, AugPipeline, presets
+
+# ecg_content: (H, W, 3) uint8 — 只有 ECG 區（pink 格 + trace）
+# ecg_mask:    (H, W) uint8   — segmentation 目標
+ecg_padded, mask_padded = place_into_canvas(
+    ecg_content, ecg_mask,
+    canvas_size=(800, 1000),
+    fill=(245, 245, 245),               # 接近白紙
+    margin_frac_range=(0.05, 0.30),     # 每邊 5-30% 白邊
+    seed_base=epoch_step_seed,
+)
+# 接著 compose 做 paper-on-scene 合成 + 拍照 aug
+aug = AugPipeline(presets.OOD_PRINTED_PAPER(), canvas_size=(512, 512))
+img, mask = aug.compose(ecg_padded, scene_bg, paper_outline_mask)
+```
+
+per-item RNG 跟 primitive 同一套 (`seed_base / epoch / step`), CPU/CUDA
+bit-exact 重現。
+
+## OOD 印刷紙 preset
+
+`paraug.presets.OOD_PRINTED_PAPER` 是 v0.5.0 內附的調好的 config, 對應
+「**用手機在室內拍印出來的紙**」這種部署 (ECG、考卷、收據、表單通用)。
+組合新增的 photo-realism primitive (`paper_glare`, `spatial_color_cast`,
+`white_balance_shift`, `defocus_blur`) 加上 `background_compose` 跟輕量
+geometric warp:
+
+```python
+from paraug import AugPipeline, presets
+
+cfg = presets.OOD_PRINTED_PAPER()
+# 指 background_compose 用真實桌面 / 地板 / 場景照片
+cfg["photometric"]["background_compose"]["photo_dir"] = "/path/to/scene_photos"
+
+aug = AugPipeline(cfg, canvas_size=(512, 512))
+img, mask = aug.compose(paper_with_content, scene_bg, paper_outline_mask,
+                          seed_base=42)
+```
+
+deepcopy 後改各 primitive spec 就能 fine-tune 給你的 dataset。
+
 ## 把 GT 當 image 額外 channel 一起 warp
 
 `n_image_channels=N` 宣告：前 N 個 channel 視為「image」（geometric +

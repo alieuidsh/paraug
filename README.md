@@ -145,6 +145,66 @@ line_x = [x * t["scale_x"] for x in line_x]
 line_y = [y * t["scale_y"] for y in line_y]
 ```
 
+## Nested-rectangle layout: `place_into_canvas`
+
+When the segmentation target is a sub-region of a larger frame — e.g. an
+ECG content rectangle sitting inside a paper sheet, which in turn sits on
+a desk — the model needs to learn that the wider surrounding rectangle is
+a *distractor*. Without random layout at training time, it will happily
+predict the whole paper sheet (or, worse, paper + desk) as the foreground.
+
+`place_into_canvas` embeds a foreground (and its mask) at a random
+position inside a larger constant-colour canvas, with random per-axis
+margins:
+
+```python
+from paraug import place_into_canvas, AugPipeline, presets
+
+# ecg_content: (H, W, 3) uint8 — only the ECG region (pink grid + traces)
+# ecg_mask:    (H, W) uint8   — segmentation target
+ecg_padded, mask_padded = place_into_canvas(
+    ecg_content, ecg_mask,
+    canvas_size=(800, 1000),
+    fill=(245, 245, 245),               # near-white paper tone
+    margin_frac_range=(0.05, 0.30),     # 5-30% white margin per side
+    seed_base=epoch_step_seed,
+)
+# `ecg_padded` is now a paper-sheet-sized canvas with the ECG content
+# placed off-centre; `mask_padded` is the ECG region within that canvas.
+
+# Pass through compose for the paper-on-scene composite + photo aug.
+aug = AugPipeline(presets.OOD_PRINTED_PAPER(), canvas_size=(512, 512))
+img, mask = aug.compose(ecg_padded, scene_bg, paper_outline_mask)
+```
+
+The deterministic CPU-side per-item RNG (same `seed_base / epoch / step`
+convention as the primitives) makes every batch position bit-exactly
+reproducible across CPU and CUDA.
+
+## OOD-printed-paper preset
+
+`paraug.presets.OOD_PRINTED_PAPER` is a hand-tuned config tuned for the
+"printed-paper-photographed-by-phone-indoors" deployment — typical for
+ECG, exam papers, receipts, forms. It combines the new v0.5.0
+photo-realism primitives (`paper_glare`, `spatial_color_cast`,
+`white_balance_shift`, `defocus_blur`) with `background_compose` and
+mild geometric warp:
+
+```python
+from paraug import AugPipeline, presets
+
+cfg = presets.OOD_PRINTED_PAPER()
+# Point background_compose at a directory of real desk / floor / scene photos
+cfg["photometric"]["background_compose"]["photo_dir"] = "/path/to/scene_photos"
+
+aug = AugPipeline(cfg, canvas_size=(512, 512))
+img, mask = aug.compose(paper_with_content, scene_bg, paper_outline_mask,
+                          seed_base=42)
+```
+
+Deep-copy the preset and adjust individual primitive specs to suit your
+dataset.
+
 ## Stacking extra spatial channels (GT-as-channel)
 
 `n_image_channels=N` declares that the first N input channels are the

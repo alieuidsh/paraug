@@ -977,17 +977,22 @@ def background_compose(img, mask, spec, seed_base, epoch, step):
 
         composed = img * mask + bg * (1 - mask)
 
-    Background source per item:
-      - With probability `p_dtd`, draw from a DTD texture cache (a stacked
-        numpy `.npy` of pre-cropped textures). If `dtd_cache_path` is not
-        provided or the file doesn't exist, falls back to procedural noise.
-      - Otherwise generate procedural noise: low-resolution Gaussian random
+    Background source per item, in priority order:
+      - With probability `p_photo`, draw from `photo_dir` (a directory of
+        real photos — desk / floor / scene / etc). Use this when you have
+        real-context images that match the deployment domain.
+      - Else with probability `p_dtd`, draw from a DTD texture cache (a
+        stacked numpy `.npy` of pre-cropped textures).
+      - Else generate procedural noise: low-resolution Gaussian random
         bilinear-upsampled to (H, W), normalised, multiplied by a per-item
         brightness factor in `bg_brightness_range`.
 
     spec = {"p": prob,
+            "photo_dir": Optional[str] (dir of real photos — recurses,
+                accepts jpg/jpeg/png/bmp/webp),
+            "p_photo": float (prob of pulling from photo_dir vs other sources),
             "dtd_cache_path": Optional[str] (path to .npy texture bank),
-            "p_dtd": float (prob of pulling from DTD cache vs procedural noise),
+            "p_dtd": float (prob of pulling from DTD vs procedural noise),
             "bg_brightness_range": (lo, hi),
             "sigma": float (smoothness for procedural noise),
             "channel_jitter": float (per-channel multiplier variance)}
@@ -1002,6 +1007,8 @@ def background_compose(img, mask, spec, seed_base, epoch, step):
     sigma = float(spec.get("sigma", 40.0))
     ch_jitter = float(spec.get("channel_jitter", 0.1))
     dtd_cache_path = spec.get("dtd_cache_path", None)
+
+    photo_dir = spec.get("photo_dir", None)
 
     # Try to load DTD cache once (per-process, cached on the spec dict for
     # subsequent calls to skip the IO).
@@ -1019,23 +1026,60 @@ def background_compose(img, mask, spec, seed_base, epoch, step):
             dtd_textures = t.float() / (255.0 if t.dtype == torch.uint8 else 1.0)
             spec["_dtd_textures_cached"] = dtd_textures
 
+    # Real-photo directory cache: lazily scan `photo_dir` once per process
+    # for image files, decode on first use of each image (cached).
+    # Use this for "background = real desktop/floor photos" instead of (or in
+    # addition to) DTD textures. Files are accepted lazily — large dirs do
+    # not force a one-shot decode of everything at process start.
+    photo_paths = spec.get("_photo_paths_cached", None)
+    photo_cache = spec.get("_photo_decoded_cache", None)
+    if photo_paths is None and photo_dir:
+        from pathlib import Path as _P
+        pd = _P(photo_dir).expanduser()
+        if pd.is_dir():
+            exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+            photo_paths = sorted(
+                str(p) for p in pd.rglob("*")
+                if p.is_file() and p.suffix.lower() in exts
+            )
+            spec["_photo_paths_cached"] = photo_paths
+            spec["_photo_decoded_cache"] = {}
+            photo_cache = spec["_photo_decoded_cache"]
+
+    def _load_photo_as_tensor(idx: int) -> torch.Tensor:
+        """Decode a single photo on first access, cache the tensor."""
+        if idx in photo_cache:
+            return photo_cache[idx]
+        from PIL import Image  # lazy import (so paraug isn't pillow-required)
+        import numpy as _np_local
+        pil = Image.open(photo_paths[idx]).convert("RGB")
+        arr = _np_local.asarray(pil)
+        t = torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0
+        photo_cache[idx] = t
+        return t
+
     if mask is None:
         # Nothing to compose against — pass-through. Composing onto an all-mask
         # area degenerates to img unchanged.
         return img, mask
 
-    # Per-item RNG sample of: gate, p_dtd choice, brightness, channel jitter,
-    # procedural seed (per-pixel via low-res random tensor allocation seed),
-    # DTD index (if available).
+    # Per-item RNG sample of: gate, dtd / photo / procedural choice,
+    # brightness, channel jitter, procedural seed (per-pixel via low-res
+    # random tensor allocation seed), texture index (if available).
+    p_photo = float(spec.get("p_photo", 0.5)) if photo_paths else 0.0
+
     gate = torch.zeros(B, dtype=torch.bool)
     use_dtd = torch.zeros(B, dtype=torch.bool)
+    use_photo = torch.zeros(B, dtype=torch.bool)
     bright = torch.ones(B, dtype=img.dtype)
     ch_mult = torch.ones(B, 3, dtype=img.dtype)
     dtd_idx = torch.zeros(B, dtype=torch.long)
+    photo_idx = torch.zeros(B, dtype=torch.long)
     # Pre-sample low-resolution procedural noise on CPU (bit-exact RNG)
     hl = max(4, int(H / sigma)); wl = max(4, int(W / sigma))
     proc_low = torch.zeros(B, 3, hl, wl, dtype=img.dtype)
     n_dtd = dtd_textures.shape[0] if dtd_textures is not None else 0
+    n_photo = len(photo_paths) if photo_paths else 0
     for i in range(B):
         g = cpu_generator(per_item_seed(seed_base, epoch, step, i, "background_compose"))
         if not sample_bool(p, g):
@@ -1044,12 +1088,15 @@ def background_compose(img, mask, spec, seed_base, epoch, step):
         bright[i] = sample_uniform(blo, bhi, g)
         for c in range(3):
             ch_mult[i, c] = 1.0 + sample_uniform(-ch_jitter, ch_jitter, g)
-        if n_dtd > 0 and sample_bool(p_dtd, g):
+        # Pick a bg source: photo > dtd > procedural. Both flags can never
+        # be True simultaneously; the sequence keeps RNG state deterministic
+        # regardless of which branch wins.
+        if n_photo > 0 and sample_bool(p_photo, g):
+            use_photo[i] = True
+            photo_idx[i] = int(torch.empty(1).uniform_(0, n_photo, generator=g).item())
+        elif n_dtd > 0 and sample_bool(p_dtd, g):
             use_dtd[i] = True
             dtd_idx[i] = int(torch.empty(1).uniform_(0, n_dtd, generator=g).item())
-        # Procedural noise always sampled to keep RNG state deterministic, even
-        # when DTD is used for this item (so the bit-exact sequence is stable
-        # regardless of which branch wins).
         proc_low[i] = torch.empty(3, hl, wl).normal_(0.0, 1.0, generator=g)
 
     # Move to device
@@ -1078,9 +1125,252 @@ def background_compose(img, mask, spec, seed_base, epoch, step):
                                          mode="bilinear", align_corners=False)[0]
                 bg[i] = (tex * ch_mult_d[i] * bright_d[i, 0]).clamp(0, 1)
 
+    # Real-photo bg: load (lazily) + resize per item
+    if n_photo > 0 and use_photo.any().item():
+        for i in range(B):
+            if use_photo[i]:
+                pho = _load_photo_as_tensor(int(photo_idx[i]))
+                pho = pho.to(img.device)
+                if pho.shape[-2:] != (H, W):
+                    pho = F.interpolate(pho.unsqueeze(0), size=(H, W),
+                                         mode="bilinear", align_corners=False)[0]
+                bg[i] = (pho * ch_mult_d[i] * bright_d[i, 0]).clamp(0, 1)
+
     composed = img * mask + bg * (1.0 - mask)
     composed = composed.clamp(0, 1)
     out = torch.where(gate_d.view(B, 1, 1, 1).expand_as(img), composed, img)
+    return out, mask
+
+
+# ─── 2026-05-23 v0.5.0 — OOD photo-realism primitives ────────────────
+# Added in response to lab observation that a paper-edge model trained on
+# synthetic ECG-on-DTD-background saturates at IoU 0.999+ on synthetic val
+# yet fails on real iPhone photos. The gap is dominated by photometric
+# realism (lighting / colour / glare / focus) that earlier primitives only
+# partially modelled. See README "OOD-printed-paper preset" for a
+# recommended config that combines these with the layout helper.
+
+
+def spatial_color_cast(img, mask, spec, seed_base, epoch, step):
+    """Low-frequency 2D additive colour shift — simulates a non-uniform
+    indoor-lighting cast that varies across the frame (warmer ceiling-LED
+    side, cooler window side, etc).
+
+    `hue_shift` rotates the entire frame by a single per-image angle;
+    real indoor scenes shift colour spatially. This primitive samples a
+    low-resolution random RGB shift map and bilinear-upsamples it to the
+    full image, then adds it.
+
+    spec = {"p": prob, "amplitude": float (peak per-channel shift, 0-0.3
+            typical), "sigma": float (low-res cell ~ min(H,W)/sigma)}
+    """
+    B, C, H, W = img.shape
+    p = float(spec.get("p", 1.0))
+    amp = float(spec.get("amplitude", 0.08))
+    sigma = float(spec.get("sigma", 8.0))
+    if C != 3:
+        # Non-RGB inputs pass through; spatial cast is RGB-specific.
+        return img, mask
+    hl = max(2, int(H / sigma)); wl = max(2, int(W / sigma))
+    gate = torch.zeros(B, dtype=torch.bool)
+    low = torch.zeros(B, 3, hl, wl, dtype=img.dtype)
+    for i in range(B):
+        g = cpu_generator(per_item_seed(seed_base, epoch, step, i, "spatial_color_cast"))
+        if sample_bool(p, g):
+            gate[i] = True
+            low[i] = torch.empty(3, hl, wl).uniform_(-amp, amp, generator=g)
+    low_d = low.to(img.device)
+    field = F.interpolate(low_d, size=(H, W), mode="bilinear",
+                           align_corners=False)
+    gate_d = gate.to(img.device).view(B, 1, 1, 1)
+    shifted = (img + field).clamp(0, 1)
+    out = torch.where(gate_d.expand_as(img), shifted, img)
+    return out, mask
+
+
+def paper_glare(img, mask, spec, seed_base, epoch, step):
+    """Large elliptical bright reflection covering 10-30% of the frame —
+    models a paper-surface glare from ceiling lights at oblique angles.
+
+    Differs from `specular_streaks` (which makes thin line-shaped
+    highlights for typical glossy specular) and `specular_highlight`
+    (small point highlights): real glossy paper under angled lighting
+    produces a *broad elliptical wash* over a large region, often
+    elongated along the page diagonal.
+
+    spec = {"p": prob,
+            "area_frac_range": (lo, hi)  # axes radii in image-short units,
+            "aspect_range": (lo, hi)     # major/minor axis ratio (1.0=circle, 4.0=streak),
+            "intensity_range": (lo, hi)  # peak additive brightness 0-1,
+            "softness": float            # falloff Gaussian sigma fraction of axis}
+    """
+    B, C, H, W = img.shape
+    p = float(spec.get("p", 1.0))
+    alo, ahi = spec.get("area_frac_range", (0.10, 0.30))
+    rlo, rhi = spec.get("aspect_range", (1.5, 4.0))
+    ilo, ihi = spec.get("intensity_range", (0.25, 0.55))
+    softness = float(spec.get("softness", 0.5))
+    short = float(min(H, W))
+    gate = torch.zeros(B, dtype=torch.bool)
+    cx_t = torch.zeros(B, dtype=img.dtype)
+    cy_t = torch.zeros(B, dtype=img.dtype)
+    ax_t = torch.zeros(B, dtype=img.dtype)
+    bx_t = torch.zeros(B, dtype=img.dtype)
+    ang_t = torch.zeros(B, dtype=img.dtype)
+    int_t = torch.zeros(B, dtype=img.dtype)
+    for i in range(B):
+        g = cpu_generator(per_item_seed(seed_base, epoch, step, i, "paper_glare"))
+        if sample_bool(p, g):
+            gate[i] = True
+            cx_t[i] = sample_uniform(0, W - 1, g)
+            cy_t[i] = sample_uniform(0, H - 1, g)
+            # area_frac taken as the major-axis radius / short side
+            major = sample_uniform(alo, ahi, g) * short
+            ratio = sample_uniform(rlo, rhi, g)
+            minor = major / ratio
+            ax_t[i] = major
+            bx_t[i] = minor
+            ang_t[i] = sample_uniform(0, math.pi, g)
+            int_t[i] = sample_uniform(ilo, ihi, g)
+    cx_d = cx_t.to(img.device); cy_d = cy_t.to(img.device)
+    ax_d = ax_t.to(img.device); bx_d = bx_t.to(img.device)
+    ang_d = ang_t.to(img.device); int_d = int_t.to(img.device)
+    gate_d = gate.to(img.device)
+    yy, xx = _xy_coords(H, W, img.dtype, img.device)
+    # Per-item: distance in rotated ellipse coords, normalised by axis.
+    cos_a = torch.cos(ang_d); sin_a = torch.sin(ang_d)
+    yy_b = yy[None]; xx_b = xx[None]
+    dx = xx_b - cx_d.view(B, 1, 1)
+    dy = yy_b - cy_d.view(B, 1, 1)
+    # Rotate into ellipse-aligned frame
+    u = dx * cos_a.view(B, 1, 1) + dy * sin_a.view(B, 1, 1)
+    v = -dx * sin_a.view(B, 1, 1) + dy * cos_a.view(B, 1, 1)
+    a_safe = ax_d.view(B, 1, 1).clamp(min=1e-3)
+    b_safe = bx_d.view(B, 1, 1).clamp(min=1e-3)
+    r2 = (u / a_safe) ** 2 + (v / b_safe) ** 2
+    # Gaussian falloff in normalised-radius space (softness sigma in fractions)
+    sig_safe = max(softness, 1e-3)
+    falloff = torch.exp(-r2 / (2 * sig_safe ** 2)) * int_d.view(B, 1, 1)
+    add = falloff.unsqueeze(1)
+    gate_d4 = gate_d.view(B, 1, 1, 1)
+    new_img = (img + add.expand_as(img)).clamp(0, 1)
+    out = torch.where(gate_d4.expand_as(img), new_img, img)
+    return out, mask
+
+
+def white_balance_shift(img, mask, spec, seed_base, epoch, step):
+    """Approximate camera white-balance shift along the Planckian
+    blackbody locus (3000K-8000K range). Multiplies per-channel by a
+    temperature-derived (R, G, B) gain.
+
+    Unlike `hue_shift` (HSV rotation that preserves grey) this physically
+    models how a camera at the wrong WB tints the whole frame towards a
+    blue/orange axis. `color_jitter`'s per-channel jitter is uniform-random
+    in 3D while WB is constrained to the 1D blackbody curve — the
+    practical visible difference is "real-camera-looking" vs "cyberpunk".
+
+    spec = {"p": prob, "temp_range_K": (lo, hi)} — Kelvin range to sample.
+    """
+    B, C, H, W = img.shape
+    p = float(spec.get("p", 1.0))
+    tlo, thi = spec.get("temp_range_K", (3000.0, 8000.0))
+    if C != 3:
+        return img, mask
+    gate = torch.zeros(B, dtype=torch.bool)
+    gains = torch.ones(B, 3, dtype=img.dtype)
+    for i in range(B):
+        g = cpu_generator(per_item_seed(seed_base, epoch, step, i, "white_balance_shift"))
+        if sample_bool(p, g):
+            gate[i] = True
+            t = sample_uniform(tlo, thi, g)
+            # Planckian-locus approximation (Robertson / Charity convention):
+            # at 6500K all gains ≈ 1. Below 6500K → R warm gain, above → B cool.
+            # Use linear gain in delta-temperature (matched to a 6500K reference).
+            dt = (t - 6500.0) / 6500.0  # ∈ ~[-0.54, +0.23]
+            # R gain decreases as T increases (cooler), B gain increases.
+            r_gain = 1.0 - 0.35 * dt
+            g_gain = 1.0 - 0.05 * dt        # G changes slightly
+            b_gain = 1.0 + 0.40 * dt
+            gains[i, 0] = r_gain
+            gains[i, 1] = g_gain
+            gains[i, 2] = b_gain
+    gains_d = gains.to(img.device).view(B, 3, 1, 1)
+    gate_d = gate.to(img.device).view(B, 1, 1, 1)
+    shifted = (img * gains_d).clamp(0, 1)
+    out = torch.where(gate_d.expand_as(img), shifted, img)
+    return out, mask
+
+
+def defocus_blur(img, mask, spec, seed_base, epoch, step):
+    """Spatially-varying gaussian blur — models autofocus error where one
+    region (typically the foreground edge) is sharp while another region
+    is out-of-focus. Mixes a fully-blurred copy with the input using a
+    low-frequency soft mask.
+
+    Differs from `gaussian_blur` (uniform whole-frame blur) and
+    `motion_blur` (line-shaped kernel) — both of those are global, defocus
+    is local.
+
+    spec = {"p": prob, "sigma_range": (lo, hi)  # blur radius in pixels,
+            "n_focus_regions": int (small number of in-focus blobs),
+            "focus_frac_range": (lo, hi)  # in-focus mask fraction range}
+    """
+    B, C, H, W = img.shape
+    p = float(spec.get("p", 1.0))
+    slo, shi = spec.get("sigma_range", (1.5, 3.5))
+    flo, fhi = spec.get("focus_frac_range", (0.20, 0.45))
+    n_focus = int(spec.get("n_focus_regions", 1))
+    gate = torch.zeros(B, dtype=torch.bool)
+    sigmas = torch.zeros(B, dtype=img.dtype)
+    # per-item: focus mask = sum of Gaussian blobs (in-focus = 1, blurred = 0).
+    # sample blob centres + axes per item.
+    blob_cx = torch.zeros(B, n_focus, dtype=img.dtype)
+    blob_cy = torch.zeros(B, n_focus, dtype=img.dtype)
+    blob_r = torch.zeros(B, n_focus, dtype=img.dtype)
+    for i in range(B):
+        g = cpu_generator(per_item_seed(seed_base, epoch, step, i, "defocus_blur"))
+        if sample_bool(p, g):
+            gate[i] = True
+            sigmas[i] = sample_uniform(slo, shi, g)
+            focus_frac = sample_uniform(flo, fhi, g)
+            target_radius = math.sqrt(focus_frac * H * W / (n_focus * math.pi))
+            for k in range(n_focus):
+                blob_cx[i, k] = sample_uniform(0, W - 1, g)
+                blob_cy[i, k] = sample_uniform(0, H - 1, g)
+                blob_r[i, k] = target_radius
+    # Build the blurred version (single sigma per item — group by sigma if
+    # we wanted to be fancy; for clarity, blur whole batch with the max
+    # sigma and only the per-item gate selects).
+    if not gate.any():
+        return img, mask
+    sigmas_d = sigmas.to(img.device)
+    max_sigma = float(sigmas[gate].max().item())
+    k = max(3, int(2 * math.ceil(3.0 * max_sigma) + 1))
+    kk = torch.arange(-(k // 2), k // 2 + 1, dtype=img.dtype, device=img.device)
+    # Use the per-batch max sigma to define a single conv kernel; per-item
+    # mixing then weights between blurred and original.
+    g_kernel = torch.exp(-kk * kk / (2 * max_sigma ** 2))
+    g_kernel = g_kernel / g_kernel.sum()
+    kx = g_kernel.view(1, 1, 1, k).expand(C, 1, 1, k)
+    ky = g_kernel.view(1, 1, k, 1).expand(C, 1, k, 1)
+    pad = k // 2
+    blurred = F.conv2d(F.pad(img, (pad, pad, pad, pad), mode="reflect"),
+                        kx, groups=C)
+    blurred = F.conv2d(F.pad(blurred, (0, 0, 0, 0)), ky, groups=C)
+    # Build in-focus mask (B, 1, H, W) per item as max over Gaussian blobs
+    yy, xx = _xy_coords(H, W, img.dtype, img.device)
+    yy_b = yy[None]; xx_b = xx[None]
+    focus = torch.zeros(B, H, W, dtype=img.dtype, device=img.device)
+    for kidx in range(n_focus):
+        cx = blob_cx[:, kidx].to(img.device).view(B, 1, 1)
+        cy = blob_cy[:, kidx].to(img.device).view(B, 1, 1)
+        r = blob_r[:, kidx].to(img.device).view(B, 1, 1).clamp(min=1.0)
+        d2 = (xx_b - cx) ** 2 + (yy_b - cy) ** 2
+        focus = torch.maximum(focus, torch.exp(-d2 / (2 * r ** 2)))
+    focus = focus.unsqueeze(1)
+    gate_d = gate.to(img.device).view(B, 1, 1, 1)
+    mixed = img * focus + blurred * (1.0 - focus)
+    out = torch.where(gate_d.expand_as(img), mixed, img)
     return out, mask
 
 
@@ -1109,4 +1399,9 @@ PHOTOMETRIC_PRIMITIVES = {
     "clahe": clahe,
     "paper_texture_overlay": paper_texture_overlay,
     "background_compose": background_compose,
+    # v0.5.0 OOD-realism additions
+    "spatial_color_cast": spatial_color_cast,
+    "paper_glare": paper_glare,
+    "white_balance_shift": white_balance_shift,
+    "defocus_blur": defocus_blur,
 }

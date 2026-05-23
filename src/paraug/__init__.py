@@ -17,8 +17,10 @@ from .pipeline import AugPipeline
 from .utils import set_deterministic, per_item_seed, cpu_generator
 from .geometric import GEOMETRIC_PRIMITIVES
 from .photometric import PHOTOMETRIC_PRIMITIVES
+from .layout import place_into_canvas
+from . import presets
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     "AugPipeline",
@@ -27,5 +29,7 @@ __all__ = [
     "cpu_generator",
     "GEOMETRIC_PRIMITIVES",
     "PHOTOMETRIC_PRIMITIVES",
+    "place_into_canvas",
+    "presets",
     "__version__",
 ]

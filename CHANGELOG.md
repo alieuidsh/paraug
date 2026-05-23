@@ -4,6 +4,68 @@ All notable changes to paraug are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-05-23
+
+### Added
+
+- **`paraug.place_into_canvas(foreground, mask, canvas_size, fill, ...)`**
+  — layout helper that embeds a foreground (and its mask) at a sampled
+  position inside a larger constant-colour canvas, with random per-axis
+  margins. Designed for nested-rectangle segmentation tasks (e.g. an ECG
+  content rectangle inside a larger paper sheet) where the model must
+  learn that the wider surrounding frame is a distractor it should
+  ignore. Without random placement at training time, the model never
+  sees content-fills-the-frame layout variation and over-segments to the
+  outer rectangle at inference. Pair with `AugPipeline.compose` for the
+  full layered-synthesis flow.
+- **4 new photometric primitives** targeting the photo-realism gap that
+  caused indoor-iPhone OOD failure (lab observation: synthetic IoU
+  saturates at 0.999 while real-photo IoU was < 0.5):
+  - `spatial_color_cast` — low-frequency 2D additive RGB shift map (vs
+    `hue_shift`'s single-angle whole-frame rotation). Models non-uniform
+    indoor-lighting tint that varies across the frame.
+  - `paper_glare` — large elliptical bright reflection covering 10-30%
+    of the frame, with adjustable aspect ratio. Differs from
+    `specular_streaks` (thin line shapes) and `specular_highlight`
+    (point highlights) — models a broad glossy-paper wash from angled
+    ceiling lights.
+  - `white_balance_shift` — per-channel gain along the Planckian
+    blackbody locus (3000K-8000K). Constrained to the 1D WB curve so it
+    looks "real-camera tinted" rather than `color_jitter`'s arbitrary
+    3D per-channel jitter.
+  - `defocus_blur` — spatially-varying gaussian blur (one or more
+    in-focus blobs over a blurred whole-frame copy). Models phone
+    autofocus error where one region is sharp and another is OOF.
+- **`background_compose.photo_dir`** — `background_compose` now accepts
+  a directory of real photos (jpg/jpeg/png/bmp/webp) in addition to the
+  existing DTD `.npy` cache and procedural noise. Photos are scanned
+  once and decoded lazily on first use, cached per-process. New
+  `p_photo` spec key controls how often the photo source is chosen
+  (priority order: photo > dtd > procedural).
+- **`paraug.presets.OOD_PRINTED_PAPER`** — curated config dict that
+  combines the new primitives at strengths tuned for the
+  "printed-paper-photographed-by-phone-indoors" deployment. Use
+  directly with `AugPipeline(presets.OOD_PRINTED_PAPER(), canvas_size=...)`
+  or deepcopy + mutate for fine-tuning.
+- `tests/test_v050_ood.py` — 17 tests covering layout, the 4 new
+  primitives (including warm/cool WB asymmetry, defocus gradient
+  energy, p=0 pass-through), `photo_dir` integration, preset
+  copy-on-call semantics, and CPU/CUDA parity for the new primitives.
+
+### Changed
+
+- `paraug` now optionally imports Pillow at runtime when
+  `background_compose.photo_dir` is used. Pillow is **not** a hard
+  dependency — the rest of paraug works without it.
+
+### Compatibility
+
+- **No breaking changes.** Every v0.4.0 caller continues to work.
+  `place_into_canvas` is opt-in, the new primitives are opt-in via
+  config keys, the new `photo_dir` spec key on `background_compose`
+  defaults to None (legacy DTD-or-procedural behaviour). Test suite
+  grew 111 → 128, all passing.
+
 ## [0.4.0] - 2026-05-22
 
 ### Added

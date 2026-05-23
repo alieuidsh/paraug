@@ -52,6 +52,12 @@ SALT = {
     "clahe":             42,
     "local_contrast":    43,
     "salt_pepper_noise": 44,
+    # v0.5.0 OOD-realism additions
+    "spatial_color_cast":   51,
+    "paper_glare":          52,
+    "white_balance_shift":  53,
+    "defocus_blur":         54,
+    "place_into_canvas":    55,
 }
 
 
