@@ -169,8 +169,11 @@ def test_new_primitives_p_zero_passthrough():
 
 # ─── background_compose photo_dir ──────────────────────────────────────
 def test_background_compose_photo_dir(tmp_path):
-    """photo_dir produces a real-photo background when p_photo > 0."""
-    from PIL import Image
+    """photo_dir produces a real-photo background when p_photo > 0.
+
+    Skips if Pillow isn't installed — Pillow is an optional runtime
+    dependency that paraug only needs when `photo_dir` is actually used."""
+    Image = pytest.importorskip("PIL.Image")
     # Plant 2 distinct photos
     arr1 = np.full((40, 50, 3), 60, dtype=np.uint8); arr1[..., 1] = 200  # green
     arr2 = np.full((40, 50, 3), 60, dtype=np.uint8); arr2[..., 2] = 200  # blue

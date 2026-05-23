@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "paraug"
-version = "0.5.0"
+version = "0.5.1"
 description = "Parity Augmentation — bit-exact CPU/GPU parity for image augmentation"
 readme = "README.md"
 license = "Apache-2.0"
@@ -42,9 +42,14 @@ dependencies = [
 
 [project.optional-dependencies]
 opencv = ["opencv-python>=4.5"]
+# Pillow enables background_compose.photo_dir (lazy-imported; the rest of
+# paraug works without it). Exposed as an opt-in extra:
+#   pip install paraug[photo]
+photo = ["Pillow>=9.0"]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+    "Pillow>=9.0",       # so the photo_dir test runs on CI
 ]
 
 [project.urls]

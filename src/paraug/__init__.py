@@ -20,7 +20,7 @@ from .photometric import PHOTOMETRIC_PRIMITIVES
 from .layout import place_into_canvas
 from . import presets
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 __all__ = [
     "AugPipeline",

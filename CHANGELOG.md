@@ -4,6 +4,34 @@ All notable changes to paraug are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-05-23
+
+### Fixed
+
+- **CI test failure on v0.5.0** — the new `test_background_compose_photo_dir`
+  test in `tests/test_v050_ood.py` imported Pillow at function entry, but
+  Pillow wasn't in the `[dev]` install-extras and CI runners install via
+  `pip install -e ".[dev]"`. All four `python 3.9 / 3.10 / 3.11 / 3.12`
+  CI matrices failed. Pillow is still an *optional* paraug runtime
+  dependency (only needed when `background_compose.photo_dir` is set);
+  the rest of paraug works without it.
+
+### Changed
+
+- New `paraug[photo]` install extra — `pip install paraug[photo]` pulls
+  Pillow for callers that want to use the `photo_dir` background source.
+- `[dev]` install-extra now also pulls Pillow so CI test runs cover the
+  photo_dir code path on every push.
+- `test_background_compose_photo_dir` now uses `pytest.importorskip("PIL.Image")`
+  so the test skips gracefully (rather than fails) when Pillow isn't
+  installed in a downstream user's test environment.
+
+### Compatibility
+
+- **No source change** from v0.5.0. v0.5.0 PyPI install works unchanged
+  for callers that don't run the dev test suite. Behaviour at runtime is
+  byte-identical; this is a CI-and-packaging fix only.
+
 ## [0.5.0] - 2026-05-23
 
 ### Added
