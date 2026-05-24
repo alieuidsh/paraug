@@ -255,3 +255,50 @@ def test_call_no_grad_on_graph_inputs():
     assert not img.requires_grad, "__call__ output still attached to autograd graph"
     if m is not None:
         assert not m.requires_grad, "__call__ mask output still attached to autograd graph"
+
+
+# ─── v0.5.4: chunk_size VRAM bound (output != unchunked by design) ────
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_chunk_size_correctness_deterministic_per_seed():
+    """chunk_size produces deterministic output per (seed_base, chunk_size).
+    Same seed_base + chunk_size → identical output across calls."""
+    cfg = {"geometric": {"perspective": {"p": 1.0, "scale_range": (0.1, 0.2)}},
+           "photometric": {"gamma": {"p": 1.0, "gamma_range": (0.7, 1.3)}}}
+    fg = torch.rand(8, 3, 32, 32, device="cuda")
+    bg = torch.rand(8, 3, 32, 32, device="cuda")
+    mask = (torch.rand(8, 1, 32, 32, device="cuda") > 0.5).float()
+    aug = AugPipeline(cfg, chunk_size=4)
+    img1, m1 = aug.compose(fg, bg, mask, seed_base=42)
+    img2, m2 = aug.compose(fg, bg, mask, seed_base=42)
+    assert torch.equal(img1, img2)
+    assert torch.equal(m1, m2)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_chunk_size_distinct_items_across_chunks():
+    """Items at local position 0 in chunk 0 vs chunk 1 must get distinct
+    augmentation — otherwise items 0 and chunk_size would collide."""
+    cfg = {"photometric": {"gamma": {"p": 1.0, "gamma_range": (0.5, 1.5)}}}
+    fg = torch.ones(4, 3, 16, 16, device="cuda") * 0.5
+    bg = torch.zeros(4, 3, 16, 16, device="cuda")
+    mask = torch.ones(4, 1, 16, 16, device="cuda")
+    aug = AugPipeline(cfg, chunk_size=2)  # 4 items / chunk 2 = 2 chunks
+    img, _ = aug.compose(fg, bg, mask, seed_base=7)
+    # Item 0 and item 2 are local position 0 in their respective chunks.
+    # With the chunk-seed offset they should differ (different gamma applied).
+    assert not torch.equal(img[0], img[2]), "chunk seed offset failed — items collided"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_chunk_size_unchunked_matches_when_batch_fits():
+    """When B <= chunk_size, chunked path is bypassed → output identical
+    to the no-chunk path."""
+    cfg = {"photometric": {"gamma": {"p": 1.0, "gamma_range": (0.8, 1.2)}}}
+    fg = torch.rand(4, 3, 16, 16, device="cuda")
+    bg = torch.rand(4, 3, 16, 16, device="cuda")
+    mask = (torch.rand(4, 1, 16, 16, device="cuda") > 0.5).float()
+    a1 = AugPipeline(cfg, chunk_size=None)
+    a2 = AugPipeline(cfg, chunk_size=8)  # B=4 <= 8, no chunking
+    img1, _ = a1.compose(fg, bg, mask, seed_base=11)
+    img2, _ = a2.compose(fg, bg, mask, seed_base=11)
+    assert torch.equal(img1, img2)

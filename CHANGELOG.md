@@ -4,6 +4,54 @@ All notable changes to paraug are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4] - 2026-05-25
+
+### Added
+
+- **`AugPipeline(cfg, ..., chunk_size=N)`** — caps per-call VRAM peak by
+  slicing the batch into sub-batches of size N internally and running the
+  full pipeline on each, concatenating outputs. **Measured on home 5060 Ti
+  at canvas 1024 bs=20 with `OOD_PRINTED_PAPER` preset + `fast_noise=True`**:
+
+  | chunk_size | peak_alloc | peak_reserved | wall (median ms) |
+  |------------|------------|---------------|------------------|
+  | None (B=20)| 2.42 GB    | 3.17 GB       | 503              |
+  | 10         | 1.68 GB    | 2.36 GB       | 484              |
+  | 5          | 1.50 GB    | 2.04 GB       | 480              |
+  | 4          | 1.47 GB    | 1.81 GB       | 475              |
+
+  Peak alloc drops 30-40% with no wall-clock cost (cache hits between
+  primitives offset the per-chunk launch overhead). Use this when a large
+  effective batch fits the model forward but not the aug-side peak — e.g.
+  PaperEdgeV13b on a 16 GB 4080 at bs=20 OOMs on aug intermediates before
+  model fwd even starts.
+
+  **Output determinism contract**: chunk_size=N gives reproducible output
+  for the same `(seed_base, epoch, step, chunk_size)`, but the per-item
+  seed mapping shifts when you change chunk_size — items at local position
+  0 within each chunk get a chunk-offset seed so cross-chunk items don't
+  collide. Equivalent training-data distribution; just don't expect bit-
+  exact output if you toggle chunk_size mid-run.
+
+### Changed
+
+- Photometric `_xy_coords` (pixel-coord meshgrid used by ~10 primitives)
+  now cached at module level by `(H, W, dtype, device)`. Cheap — 16 MB per
+  entry at canvas 1024 — but eliminates ~10 redundant 8 MB alloc/free per
+  `compose` call. Call `paraug.photometric.clear_xy_cache()` if you change
+  canvas size mid-run and want to drop the old entries.
+- `defocus_blur` now `del padded` between the two separable convs so the
+  reflect-padded copy (~257 MB at bs=20 canvas=1024 sigma=3.5) frees
+  before the second conv's intermediate.
+
+### Compatibility
+
+- Default `chunk_size=None` preserves v0.5.3 behavior exactly.
+- Three new tests in `test_compose.py`:
+  `test_chunk_size_correctness_deterministic_per_seed`,
+  `test_chunk_size_distinct_items_across_chunks`,
+  `test_chunk_size_unchunked_matches_when_batch_fits`.
+
 ## [0.5.3] - 2026-05-25
 
 ### Added

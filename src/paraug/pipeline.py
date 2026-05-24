@@ -164,7 +164,8 @@ class AugPipeline:
 
     def __init__(self, config: Dict,
                  n_image_channels: Optional[int] = None,
-                 canvas_size: Optional[Tuple[int, int]] = None):
+                 canvas_size: Optional[Tuple[int, int]] = None,
+                 chunk_size: Optional[int] = None):
         self.config = config
         self.n_image_channels = n_image_channels
         if n_image_channels is not None and n_image_channels < 1:
@@ -179,6 +180,14 @@ class AugPipeline:
                     f"got {canvas_size!r}")
             canvas_size = (int(canvas_size[0]), int(canvas_size[1]))
         self.canvas_size = canvas_size
+        # chunk_size: split the batch into sub-batches of this size internally.
+        # Each chunk is processed by the full pipeline, outputs concat'd. VRAM
+        # peak scales with chunk_size, not batch_size — set this when the
+        # caller passes a large batch that doesn't fit aug peak headroom but
+        # the model fwd does. None = no chunking (default, back-compat).
+        if chunk_size is not None and int(chunk_size) < 1:
+            raise ValueError(f"chunk_size must be >=1 or None; got {chunk_size}")
+        self.chunk_size = int(chunk_size) if chunk_size is not None else None
         self.geom_specs = []
         for name, spec in config.get("geometric", {}).items():
             if name not in GEOMETRIC_PRIMITIVES:
@@ -277,10 +286,63 @@ class AugPipeline:
         # intermediates pile up on any live autograd graph the caller's inputs
         # carry — a training loop that forgets to detach can blow VRAM by GB.
         with torch.no_grad():
+            if self.chunk_size is not None and img.shape[0] > self.chunk_size:
+                return self._call_chunked(img, mask, seed_base, epoch, step)
             img, mask = self._apply_geometric(img, mask, seed_base, epoch, step)
             img, mask = self._apply_photometric(img, mask, seed_base, epoch, step)
             img, mask = self._resize_to_canvas(img, mask)
         return img, mask
+
+    def _chunk_seed(self, seed_base, chunk_idx):
+        """Per-chunk seed offset so items at position 0 in chunk 0 vs chunk 1
+        don't collide (each primitive uses `per_item_seed(..., item_i, ...)`
+        with item_i being the *local* index in the current tensor — without
+        this offset, item 0 in every chunk would get identical aug)."""
+        # Large prime stride so different chunks get well-separated RNG streams.
+        return int(seed_base) + int(chunk_idx) * 2_000_003
+
+    def _call_chunked(self, img, mask, seed_base, epoch, step):
+        """Process img/mask in chunks of `self.chunk_size` along the batch dim
+        to bound per-call VRAM peak. Each chunk uses a different seed offset
+        so items at the same local position across chunks get distinct aug.
+        Output is deterministic per (seed_base, epoch, step, chunk_size) but
+        NOT equal to the unchunked path — changing chunk_size mid-run shifts
+        the per-item seed mapping."""
+        B = img.shape[0]
+        cs = self.chunk_size
+        out_imgs, out_masks = [], []
+        for ci, s in enumerate(range(0, B, cs)):
+            e = min(s + cs, B)
+            img_c = img[s:e]
+            mask_c = mask[s:e] if mask is not None else None
+            sb_c = self._chunk_seed(seed_base, ci)
+            img_c, mask_c = self._apply_geometric(img_c, mask_c, sb_c, epoch, step)
+            img_c, mask_c = self._apply_photometric(img_c, mask_c, sb_c, epoch, step)
+            img_c, mask_c = self._resize_to_canvas(img_c, mask_c)
+            out_imgs.append(img_c)
+            if mask is not None:
+                out_masks.append(mask_c)
+        return (torch.cat(out_imgs, dim=0),
+                torch.cat(out_masks, dim=0) if mask is not None else None)
+
+    def _compose_chunked(self, fg, bg, m, seed_base, epoch, step):
+        """compose() equivalent of _call_chunked. Same per-chunk seed offset
+        rule — see _call_chunked for the correctness reasoning."""
+        B = fg.shape[0]
+        cs = self.chunk_size
+        out_imgs, out_masks = [], []
+        for ci, s in enumerate(range(0, B, cs)):
+            e = min(s + cs, B)
+            fg_c = fg[s:e]; bg_c = bg[s:e]; m_c = m[s:e]
+            sb_c = self._chunk_seed(seed_base, ci)
+            fg_w, m_w = self._apply_geometric(fg_c, m_c, sb_c, epoch, step)
+            comp = fg_w * m_w + bg_c * (1.0 - m_w)
+            comp = comp.clamp(0.0, 1.0)
+            comp, m_w = self._apply_photometric(comp, m_w, sb_c, epoch, step)
+            comp, m_w = self._resize_to_canvas(comp, m_w)
+            out_imgs.append(comp)
+            out_masks.append(m_w)
+        return (torch.cat(out_imgs, dim=0), torch.cat(out_masks, dim=0))
 
     def compose(self,
                 foreground: Union[np.ndarray, torch.Tensor],
@@ -368,16 +430,20 @@ class AugPipeline:
         # no_grad wrap matters (TL;DR: prevents VRAM blowup when caller's
         # inputs carry a live autograd graph).
         with torch.no_grad():
-            # 1. geometric warp of (foreground, mask) — background stays static.
-            fg_w, m_w = self._apply_geometric(fg, m, seed_base, epoch, step)
-            # 2. blend foreground onto background through the warped mask.
-            composite = fg_w * m_w + bg * (1.0 - m_w)
-            composite = composite.clamp(0.0, 1.0)
-            # 3. photometric on the composite (mask passes through untouched).
-            composite, m_w = self._apply_photometric(
-                composite, m_w, seed_base, epoch, step)
-            # 4. conform to canvas.
-            composite, m_w = self._resize_to_canvas(composite, m_w)
+            if self.chunk_size is not None and fg.shape[0] > self.chunk_size:
+                composite, m_w = self._compose_chunked(
+                    fg, bg, m, seed_base, epoch, step)
+            else:
+                # 1. geometric warp of (foreground, mask) — background stays static.
+                fg_w, m_w = self._apply_geometric(fg, m, seed_base, epoch, step)
+                # 2. blend foreground onto background through the warped mask.
+                composite = fg_w * m_w + bg * (1.0 - m_w)
+                composite = composite.clamp(0.0, 1.0)
+                # 3. photometric on the composite (mask passes through untouched).
+                composite, m_w = self._apply_photometric(
+                    composite, m_w, seed_base, epoch, step)
+                # 4. conform to canvas.
+                composite, m_w = self._resize_to_canvas(composite, m_w)
 
         transform = {
             "canvas_size": self.canvas_size,

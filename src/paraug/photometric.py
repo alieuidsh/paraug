@@ -219,12 +219,32 @@ def cutout(img, mask, spec, seed_base, epoch, step):
 
 
 # ─── batch 2: pattern overlay (elementwise after pattern build) ───────
+# Module-level cache for the (yy, xx) pixel-coord grid. ~10 photometric
+# primitives rebuild it per call; at canvas 1024 each rebuild is 8 MB
+# allocated then immediately freed (16 MB total). Caching saves the alloc
+# churn (and the kernel launch latency) without holding meaningful VRAM —
+# one (H, W, dtype, device) entry is 16 MB, typical pipeline uses one
+# canvas_size, so cache footprint stays tiny.
+_XY_CACHE: dict = {}
+
+
 def _xy_coords(H, W, dtype, device="cpu"):
+    key = (int(H), int(W), dtype, str(device))
+    hit = _XY_CACHE.get(key)
+    if hit is not None:
+        return hit
     yy, xx = torch.meshgrid(
         torch.arange(H, dtype=dtype, device=device),
         torch.arange(W, dtype=dtype, device=device),
         indexing="ij")
+    _XY_CACHE[key] = (yy, xx)
     return yy, xx
+
+
+def clear_xy_cache() -> None:
+    """Drop the cached coord grids — call if you change canvas_size mid-run
+    and want to free the old entries (16 MB each at canvas 1024)."""
+    _XY_CACHE.clear()
 
 
 def lighting(img, mask, spec, seed_base, epoch, step):
@@ -1400,9 +1420,13 @@ def defocus_blur(img, mask, spec, seed_base, epoch, step):
     kx = g_kernel.view(1, 1, 1, k).expand(C, 1, 1, k)
     ky = g_kernel.view(1, 1, k, 1).expand(C, 1, k, 1)
     pad = k // 2
-    blurred = F.conv2d(F.pad(img, (pad, pad, pad, pad), mode="reflect"),
-                        kx, groups=C)
-    blurred = F.conv2d(F.pad(blurred, (0, 0, 0, 0)), ky, groups=C)
+    # Separable Gaussian: pad reflect once, kx along W, then ky along H.
+    # Explicit `del padded` after kx so the (B, C, H+2pad, W+2pad) copy
+    # (~257 MB at bs=20 canvas=1024 pad=5) frees before ky's intermediate.
+    padded = F.pad(img, (pad, pad, pad, pad), mode="reflect")
+    blurred = F.conv2d(padded, kx, groups=C)
+    del padded
+    blurred = F.conv2d(blurred, ky, groups=C)
     # Build in-focus mask (B, 1, H, W) per item as max over Gaussian blobs
     yy, xx = _xy_coords(H, W, img.dtype, img.device)
     yy_b = yy[None]; xx_b = xx[None]
