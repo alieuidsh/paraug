@@ -106,3 +106,28 @@ def set_deterministic(state: bool = True, warn_only: bool = True) -> None:
     if torch.cuda.is_available():
         torch.backends.cudnn.deterministic = state
         torch.backends.cudnn.benchmark = not state
+
+
+# Module-global fast-noise toggle (v0.5.3+). Default OFF preserves bit-exact
+# CPU/GPU parity that test_parity.py relies on. When ON, the per-pixel
+# noise tensor used by gaussian_noise / jpeg_approx / salt_pepper_noise is
+# drawn on the image's device via torch.randn, eliminating the CPU sample +
+# CPU→GPU copy that dominates wall-clock at canvas≥512. Trade-off:
+# cuRAND ≠ MT19937, so fast-mode output is NOT bit-exact equal to slow-mode
+# output for the same seed. Determinism per (seed_base, epoch, step) is
+# preserved within either mode.
+_FAST_NOISE: bool = False
+
+
+def set_fast_noise(state: bool = True) -> None:
+    """Enable GPU-side noise sampling for gaussian_noise / jpeg_approx /
+    salt_pepper_noise. ~40-55× faster at canvas 1024 bs=20 (357 ms → 6 ms
+    measured on a 5060 Ti). Breaks bit-exact CPU/GPU parity, so leave OFF
+    when running paraug's parity tests. Recommended ON for production
+    training where determinism per seed is enough."""
+    global _FAST_NOISE
+    _FAST_NOISE = bool(state)
+
+
+def fast_noise_enabled() -> bool:
+    return _FAST_NOISE

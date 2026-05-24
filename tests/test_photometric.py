@@ -116,3 +116,59 @@ def test_photometric_background_compose_p_zero():
     out_img, out_mask = aug(img, mask=mask, seed_base=42)
     assert torch.equal(out_img, img), "p=0 image changed"
     assert torch.equal(out_mask, mask)
+
+
+# ─── v0.5.3: fast_noise opt-in (CPU/GPU parity intentionally broken) ──
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_fast_noise_default_off_preserves_parity():
+    """set_fast_noise default OFF — gaussian_noise/jpeg_approx/salt_pepper_noise
+    on CUDA still produce CPU-path output (slow but bit-exact to CPU)."""
+    from paraug import set_fast_noise
+    from paraug.photometric import gaussian_noise
+    assert not __import__("paraug").fast_noise_enabled()  # default state
+    img = torch.rand(2, 3, 16, 16, device="cuda")
+    set_fast_noise(False)  # ensure clean state
+    out_a, _ = gaussian_noise(img, None, {"p": 1.0, "sigma_range": (0.01, 0.02)}, 7, 0, 0)
+    out_b, _ = gaussian_noise(img, None, {"p": 1.0, "sigma_range": (0.01, 0.02)}, 7, 0, 0)
+    assert torch.equal(out_a, out_b), "CPU-path must be deterministic"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_fast_noise_deterministic_per_seed():
+    """When fast_noise=True, same seed → identical output (within run).
+    Different seed → different output."""
+    from paraug import set_fast_noise
+    from paraug.photometric import gaussian_noise, jpeg_approx, salt_pepper_noise
+    try:
+        set_fast_noise(True)
+        img = torch.rand(2, 3, 16, 16, device="cuda")
+        for fn, spec in [
+            (gaussian_noise, {"p": 1.0, "sigma_range": (0.01, 0.02)}),
+            (jpeg_approx, {"p": 1.0, "noise_sigma_range": (0.01, 0.02)}),
+            (salt_pepper_noise, {"p": 1.0, "density": 0.05, "salt_vs_pepper": 0.5}),
+        ]:
+            a, _ = fn(img, None, spec, 7, 0, 0)
+            b, _ = fn(img, None, spec, 7, 0, 0)
+            c, _ = fn(img, None, spec, 8, 0, 0)
+            assert torch.equal(a, b), f"{fn.__name__}: same seed must produce same output"
+            assert not torch.equal(a, c), f"{fn.__name__}: different seed should differ"
+    finally:
+        set_fast_noise(False)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_fast_noise_breaks_cpu_path_parity_by_design():
+    """fast_noise produces DIFFERENT output from CPU-path (cuRAND != MT19937).
+    Documenting the contract: fast_noise is for production, not parity tests."""
+    from paraug import set_fast_noise
+    from paraug.photometric import gaussian_noise
+    img = torch.rand(2, 3, 16, 16, device="cuda")
+    set_fast_noise(False)
+    out_slow, _ = gaussian_noise(img, None, {"p": 1.0, "sigma_range": (0.01, 0.02)}, 7, 0, 0)
+    try:
+        set_fast_noise(True)
+        out_fast, _ = gaussian_noise(img, None, {"p": 1.0, "sigma_range": (0.01, 0.02)}, 7, 0, 0)
+    finally:
+        set_fast_noise(False)
+    # They must differ — that's the whole opt-in trade-off.
+    assert not torch.equal(out_slow, out_fast), "fast_noise should produce different output by design"

@@ -14,17 +14,20 @@ Quickstart:
     img_out, mask_out = aug(img, mask=mask, seed_base=42)
 """
 from .pipeline import AugPipeline
-from .utils import set_deterministic, per_item_seed, cpu_generator
+from .utils import (set_deterministic, per_item_seed, cpu_generator,
+                    set_fast_noise, fast_noise_enabled)
 from .geometric import GEOMETRIC_PRIMITIVES
 from .photometric import PHOTOMETRIC_PRIMITIVES
 from .layout import place_into_canvas
 from . import presets
 
-__version__ = "0.5.2"
+__version__ = "0.5.3"
 
 __all__ = [
     "AugPipeline",
     "set_deterministic",
+    "set_fast_noise",
+    "fast_noise_enabled",
     "per_item_seed",
     "cpu_generator",
     "GEOMETRIC_PRIMITIVES",

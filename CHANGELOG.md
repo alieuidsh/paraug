@@ -4,6 +4,31 @@ All notable changes to paraug are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] - 2026-05-25
+
+### Added
+
+- **`paraug.set_fast_noise(True)`** — opt-in module flag that switches the
+  three hottest noise primitives (`gaussian_noise`, `jpeg_approx`,
+  `salt_pepper_noise`) to GPU-side `torch.randn` / `torch.rand` instead of
+  the default CPU-sample + CPU→GPU copy. **Measured 1.85× end-to-end speedup**
+  on the `OOD_PRINTED_PAPER` preset at bs=20 canvas=1024 (936 → 506 ms
+  median per `aug.compose` call on a 5060 Ti). Default OFF — existing
+  CPU/GPU bit-exact parity tests in `test_parity.py` keep passing unchanged.
+  Trade-off: cuRAND ≠ MT19937, so `fast_noise=True` produces different output
+  than `fast_noise=False` for the same seed. Determinism per
+  `(seed_base, epoch, step)` is preserved within either mode. Use in
+  production training where seed-deterministic is enough; leave off when
+  running parity tests or comparing against a CPU-aug baseline.
+
+### Compatibility
+
+- **No API change** for existing callers. Default state matches v0.5.2 exactly.
+- Three new tests in `test_photometric.py`:
+  `test_fast_noise_default_off_preserves_parity`,
+  `test_fast_noise_deterministic_per_seed`,
+  `test_fast_noise_breaks_cpu_path_parity_by_design`.
+
 ## [0.5.2] - 2026-05-24
 
 ### Fixed

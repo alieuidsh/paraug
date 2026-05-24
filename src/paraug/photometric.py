@@ -10,7 +10,7 @@ bit-exact within fp32 ulp.
 import math
 import torch
 
-from .utils import per_item_seed, cpu_generator, sample_uniform, sample_bool
+from .utils import per_item_seed, cpu_generator, sample_uniform, sample_bool, fast_noise_enabled
 
 
 # ─── 13: gamma ────────────────────────────────────────────────────────
@@ -50,10 +50,24 @@ def gaussian_noise(img, mask, spec, seed_base, epoch, step):
     """Per-item additive Gaussian noise with σ sampled from [lo, hi].
 
     spec = {"p": prob, "sigma_range": (lo, hi)}
+
+    Hot at canvas 1024: filling a CPU randn tensor and copying to GPU costs
+    300+ ms at bs=20. `paraug.set_fast_noise(True)` switches to GPU-side
+    randn (~55× faster) at the cost of bit-exact CPU/GPU parity.
     """
     B = img.shape[0]
     p = float(spec.get("p", 1.0))
     smin, smax = spec.get("sigma_range", (0.005, 0.03))
+
+    if fast_noise_enabled() and img.is_cuda:
+        g = torch.Generator(device=img.device)
+        g.manual_seed(per_item_seed(seed_base, epoch, step, 0, "gaussian_noise"))
+        gate = (torch.rand(B, generator=g, device=img.device) < p)
+        sigmas = torch.empty(B, dtype=img.dtype, device=img.device).uniform_(smin, smax, generator=g)
+        noise = torch.randn(img.shape, generator=g, device=img.device, dtype=img.dtype) * sigmas.view(B, 1, 1, 1)
+        out = torch.where(gate.view(B, 1, 1, 1).expand_as(img), (img + noise).clamp(0, 1), img)
+        return out, mask
+
     gate = torch.zeros(B, dtype=torch.bool)
     noise = torch.zeros_like(img.cpu()) if img.is_cuda else torch.zeros_like(img)
     sigmas = torch.zeros(B, dtype=img.dtype)
@@ -73,11 +87,28 @@ def salt_pepper_noise(img, mask, spec, seed_base, epoch, step):
     """Per-pixel salt/pepper: with prob `density`, replace pixel with 0 or 1.
 
     spec = {"p": prob, "density": fraction of pixels affected, "salt_vs_pepper": float [0,1]}
+
+    Same noise hot-spot as gaussian_noise — see `paraug.set_fast_noise()`.
     """
     B, C, H, W = img.shape
     p = float(spec.get("p", 1.0))
     density = float(spec.get("density", 0.01))
     salt_frac = float(spec.get("salt_vs_pepper", 0.5))
+
+    if fast_noise_enabled() and img.is_cuda:
+        g = torch.Generator(device=img.device)
+        g.manual_seed(per_item_seed(seed_base, epoch, step, 0, "salt_pepper_noise"))
+        gate = (torch.rand(B, generator=g, device=img.device) < p)
+        pix_d = torch.rand(B, 1, H, W, generator=g, device=img.device)
+        salt_d = torch.rand(B, 1, H, W, generator=g, device=img.device)
+        gate_d = gate.view(B, 1, 1, 1)
+        affected = pix_d < density
+        is_salt = salt_d < salt_frac
+        val = torch.where(is_salt, torch.ones_like(img), torch.zeros_like(img))
+        new_img = torch.where(affected.expand_as(img), val, img)
+        out = torch.where(gate_d.expand_as(img), new_img, img)
+        return out, mask
+
     gate = torch.zeros(B, dtype=torch.bool)
     # Per-pixel uniform mask, per-item; we sample (B, 1, H, W) on CPU
     pix_rand = torch.zeros(B, 1, H, W, dtype=img.dtype)
@@ -637,10 +668,25 @@ def jpeg_approx(img, mask, spec, seed_base, epoch, step):
     captures the visual character — high-freq attenuation + quantization noise.)
 
     spec = {"p": prob, "noise_sigma_range": (lo, hi)}
+
+    Same noise hot-spot as gaussian_noise — see `paraug.set_fast_noise()`.
     """
     B = img.shape[0]
     p = float(spec.get("p", 1.0))
     smin, smax = spec.get("noise_sigma_range", (0.005, 0.02))
+
+    if fast_noise_enabled() and img.is_cuda:
+        g = torch.Generator(device=img.device)
+        g.manual_seed(per_item_seed(seed_base, epoch, step, 0, "jpeg_approx"))
+        gate = (torch.rand(B, generator=g, device=img.device) < p)
+        sigmas = torch.empty(B, dtype=img.dtype, device=img.device).uniform_(smin, smax, generator=g)
+        noise = torch.randn(img.shape, generator=g, device=img.device, dtype=img.dtype) * sigmas.view(B, 1, 1, 1)
+        kbox = torch.full((1, 1, 3, 3), 1.0 / 9.0, dtype=img.dtype, device=img.device)
+        w3 = kbox.expand(img.shape[1], 1, 3, 3)
+        blurred = F.conv2d(img + noise, w3, padding=1, groups=img.shape[1]).clamp(0, 1)
+        out = torch.where(gate.view(B, 1, 1, 1).expand_as(img), blurred, img)
+        return out, mask
+
     gate = torch.zeros(B, dtype=torch.bool)
     noise = torch.zeros_like(img.cpu()) if img.is_cuda else torch.zeros_like(img)
     for i in range(B):
