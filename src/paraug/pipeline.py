@@ -273,9 +273,13 @@ class AugPipeline:
             the inputs; when set, both are stretched to `canvas_size`.
             `mask_out` is None iff `mask` is None.
         """
-        img, mask = self._apply_geometric(img, mask, seed_base, epoch, step)
-        img, mask = self._apply_photometric(img, mask, seed_base, epoch, step)
-        img, mask = self._resize_to_canvas(img, mask)
+        # Aug is preprocessing, never backpropped. Without no_grad, primitive
+        # intermediates pile up on any live autograd graph the caller's inputs
+        # carry — a training loop that forgets to detach can blow VRAM by GB.
+        with torch.no_grad():
+            img, mask = self._apply_geometric(img, mask, seed_base, epoch, step)
+            img, mask = self._apply_photometric(img, mask, seed_base, epoch, step)
+            img, mask = self._resize_to_canvas(img, mask)
         return img, mask
 
     def compose(self,
@@ -360,16 +364,20 @@ class AugPipeline:
 
         pre_h, pre_w = fg_hw
 
-        # 1. geometric warp of (foreground, mask) — background stays static.
-        fg_w, m_w = self._apply_geometric(fg, m, seed_base, epoch, step)
-        # 2. blend foreground onto background through the warped mask.
-        composite = fg_w * m_w + bg * (1.0 - m_w)
-        composite = composite.clamp(0.0, 1.0)
-        # 3. photometric on the composite (mask passes through untouched).
-        composite, m_w = self._apply_photometric(
-            composite, m_w, seed_base, epoch, step)
-        # 4. conform to canvas.
-        composite, m_w = self._resize_to_canvas(composite, m_w)
+        # Aug is preprocessing, never backpropped. See __call__ for why this
+        # no_grad wrap matters (TL;DR: prevents VRAM blowup when caller's
+        # inputs carry a live autograd graph).
+        with torch.no_grad():
+            # 1. geometric warp of (foreground, mask) — background stays static.
+            fg_w, m_w = self._apply_geometric(fg, m, seed_base, epoch, step)
+            # 2. blend foreground onto background through the warped mask.
+            composite = fg_w * m_w + bg * (1.0 - m_w)
+            composite = composite.clamp(0.0, 1.0)
+            # 3. photometric on the composite (mask passes through untouched).
+            composite, m_w = self._apply_photometric(
+                composite, m_w, seed_base, epoch, step)
+            # 4. conform to canvas.
+            composite, m_w = self._resize_to_canvas(composite, m_w)
 
         transform = {
             "canvas_size": self.canvas_size,

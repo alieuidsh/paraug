@@ -4,6 +4,30 @@ All notable changes to paraug are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-05-24
+
+### Fixed
+
+- **GPU VRAM blowup when callers pass graph-tracked tensors** — `AugPipeline.__call__`
+  and `AugPipeline.compose()` now wrap their bodies in `torch.no_grad()`.
+  Augmentation is preprocessing and is never backpropped through, so this is
+  defensive and semantically a no-op for correct callers. **Why it matters**:
+  a downstream training loop that passes aug a tensor still attached to a
+  live autograd graph (e.g. forgot to `.detach()` after a TPS warp built with
+  `F.grid_sample`) was forcing every primitive's intermediate tensor to stay
+  alive on that graph for the entire forward pass. With the v0.5.0 preset
+  (20+ primitives, each producing canvas-sized intermediates at bs=20
+  canvas=1024) this added **~10 GB VRAM** versus v0.4 — driving 24 GB peak
+  on a 3090 where v0.4 ran at 14.7 GB. Reproduced on home Win bench as
+  +5.25 GB on a 5060 Ti; the no_grad wrap drops it back to baseline.
+
+### Compatibility
+
+- **No API change.** If you were relying on aug being differentiable
+  (extremely unusual — only adversarial-aug research), wrap the call in
+  `torch.enable_grad()` to opt back in. We are not aware of any caller in
+  this position.
+
 ## [0.5.1] - 2026-05-23
 
 ### Fixed

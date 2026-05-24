@@ -222,3 +222,36 @@ def test_compose_cpu_cuda_parity():
     img_cu, m_cu = aug.compose(fg.cuda(), bg.cuda(), mask.cuda(), seed_base=7)
     assert (img_cpu - img_cu.cpu()).abs().max() < 2e-4
     assert (m_cpu - m_cu.cpu()).abs().max() < 2e-4
+
+
+# ─── v0.5.2: aug does not propagate gradients (VRAM regression test) ──
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_compose_no_grad_on_graph_inputs():
+    """Aug is preprocessing — even if inputs carry an autograd graph (e.g. the
+    caller forgot to .detach() after a TPS warp), aug must not pile intermediates
+    on it. Reproducing the v0.5.0 bug: tensors with requires_grad=True passed
+    into compose() previously kept every primitive's intermediate alive, adding
+    ~5 GB at bs=20 canvas=1024. Fix: __call__/compose wrap body in no_grad."""
+    aug = AugPipeline({"geometric": {"affine": {"p": 1.0, "rot_deg": 5.0}},
+                       "photometric": {"gamma": {"p": 1.0, "gamma_range": (0.8, 1.2)}}})
+    fg = torch.rand(2, 3, 32, 40, device="cuda", requires_grad=True)
+    bg = torch.rand(2, 3, 32, 40, device="cuda", requires_grad=True)
+    mask = (torch.rand(2, 1, 32, 40, device="cuda") > 0.5).float()
+    img, m = aug.compose(fg, bg, mask, seed_base=0)
+    # Outputs must be detached from the input graph.
+    assert not img.requires_grad, "compose output still attached to autograd graph"
+    if m is not None:
+        assert not m.requires_grad, "compose mask output still attached to autograd graph"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_call_no_grad_on_graph_inputs():
+    """Same as test_compose_no_grad_on_graph_inputs, but for __call__."""
+    aug = AugPipeline({"geometric": {"affine": {"p": 1.0, "rot_deg": 5.0}},
+                       "photometric": {"gamma": {"p": 1.0, "gamma_range": (0.8, 1.2)}}})
+    img_in = torch.rand(2, 3, 32, 40, device="cuda", requires_grad=True)
+    mask_in = (torch.rand(2, 1, 32, 40, device="cuda") > 0.5).float()
+    img, m = aug(img_in, mask=mask_in, seed_base=0)
+    assert not img.requires_grad, "__call__ output still attached to autograd graph"
+    if m is not None:
+        assert not m.requires_grad, "__call__ mask output still attached to autograd graph"
