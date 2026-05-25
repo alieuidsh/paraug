@@ -21,18 +21,18 @@ def _copy(d):
 
 # ─── OOD_PRINTED_PAPER ────────────────────────────────────────────────
 #
-# Tuned for the "printed ECG paper photographed by a phone in indoor
+# Tuned for the "printed paper photographed by a phone in indoor
 # lighting" deployment: a paper sheet sits on a desk / floor, photo is
 # taken at handheld angle, indoor LEDs cast a non-uniform colour, paper
 # surface produces a broad specular glare on one side. The target
-# segmentation is the ECG content rectangle inside the paper (with white
-# margins around it).
+# segmentation is an inner content rectangle inside the paper (with
+# margins around it) — exam papers, forms, receipts, etc.
 #
 # Recommended pairing:
-#   - call `place_into_canvas(ECG_content, ECG_mask, canvas_size, fill=paper_tone)`
-#     first to embed the content in a white-paper canvas with random
+#   - call `place_into_canvas(inner_content, inner_mask, canvas_size, fill=paper_tone)`
+#     first to embed the content in a paper-coloured canvas with random
 #     margins (so the model learns "the wider paper rectangle is a
-#     distractor, predict only ECG content");
+#     distractor, predict only the inner content");
 #   - pass `photo_dir` in `background_compose` pointing to a directory of
 #     real desk / floor / scene photos so the model sees realistic
 #     backgrounds instead of DTD-only textures.

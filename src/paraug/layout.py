@@ -4,27 +4,27 @@ canvas before composing.
 Most aug pipelines model "what happens to the image" — colour, blur, warp.
 `paraug.layout` models "where the content sits inside the frame": is the
 content centred, off to the left, padded with a thick top margin? This
-turns out to matter when the segmentation target is a **sub-region** of
-the foreground (e.g. an ECG content rectangle inside a larger paper sheet)
-because without random placement the model never learns that the wider
-paper frame is a *distractor* it should ignore.
+matters when the segmentation target is a **sub-region** of the
+foreground (an inner rectangle inside a larger outer rectangle) — without
+random placement the model never learns that the wider outer frame is a
+*distractor* it should ignore.
 
 `place_into_canvas` is the main helper. Use it as a pre-step before
-`AugPipeline.compose` to randomise where the foreground sits inside a
-paper-sized canvas:
+`AugPipeline.compose` to randomise where the inner content sits inside a
+larger canvas:
 
     from paraug import place_into_canvas, AugPipeline
 
-    # ECG content + ECG-region mask
-    ecg_padded, ecg_padded_mask = place_into_canvas(
-        ecg_content, ecg_inner_mask,
+    # inner content + inner-region mask
+    content_padded, mask_padded = place_into_canvas(
+        content, content_mask,
         canvas_size=(800, 1000),
-        fill=paper_tone_rgb,             # white-paper colour
-        margin_frac_range=(0.05, 0.30),  # 5-30% white margin per side
+        fill=outer_tone_rgb,             # canvas background colour
+        margin_frac_range=(0.05, 0.30),  # 5-30% margin per side, randomised
         seed_base=epoch_step_seed,
     )
-    # Now compose: the "foreground" is a paper-sized sheet with ECG inside
-    img, mask = aug.compose(ecg_padded, scene_bg, paper_outline_mask)
+    # Now compose: the "foreground" is the canvas with content placed inside
+    img, mask = aug.compose(content_padded, scene_bg, outer_outline_mask)
 
 All sampling uses paraug's CPU-side per-item RNG (`cpu_generator`,
 `per_item_seed`) so the placement is deterministic and CPU/CUDA-identical
@@ -137,12 +137,12 @@ def place_into_canvas(
     canvas, surrounded by a constant-colour fill (e.g. paper tone).
 
     Critically the *mask* is preserved untouched and zero-padded outside the
-    foreground — so downstream training sees "ECG content at position
-    (cx, cy) within a larger paper canvas, with the loss target restricted
-    to the actual ECG region". Without this aug, every training sample has
-    the same content-fills-the-frame layout and the model never learns that
-    a larger surrounding rectangle (the paper itself, then the desk under
-    the paper) is a distractor it must ignore.
+    foreground — so downstream training sees "inner content at position
+    (cx, cy) within a larger canvas, with the loss target restricted to the
+    actual inner region". Without this aug, every training sample has the
+    same content-fills-the-frame layout and the model never learns that a
+    larger surrounding rectangle (the canvas itself, then anything outside
+    the canvas) is a distractor it must ignore.
 
     The output has the foreground type (numpy in → numpy out, tensor in →
     tensor out). Returns `(canvas_img, canvas_mask)` with spatial size

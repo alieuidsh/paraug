@@ -9,11 +9,16 @@
 
 **Languages**: English | [繁體中文](README_zh-TW.md)
 
-`paraug` is a PyTorch-native augmentation library that guarantees **the same
-seed produces the same output on CPU and CUDA**. Per-primitive RNG is sampled
-on CPU regardless of tensor device, so a training run that randomly switches
-between CPU and GPU stages — or a unit test that swaps backends — stays
-deterministic.
+`paraug` is a general-purpose PyTorch-native augmentation library.
+**31 primitives** (7 geometric + 24 photometric), **GPU-batch-native**,
+with **bit-exact CPU/GPU parity**: the same seed produces the same output
+on CPU and CUDA. Per-primitive RNG is sampled on CPU regardless of tensor
+device, so a training run that randomly switches between CPU and GPU
+stages — or a unit test that swaps backends — stays deterministic.
+
+It's a drop-in replacement for `kornia.augmentation` / `torchvision.v2`
+when you need reproducibility across heterogeneous hardware, and a
+batch-native alternative to `albumentations` when you want GPU acceleration.
 
 ## Why parity matters
 
@@ -52,6 +57,8 @@ pip install git+https://github.com/alieuidsh/paraug.git
 import torch
 from paraug import AugPipeline
 
+# Build your own config from the 31 primitives. Per-op `p` is independent
+# (each op fires with its own probability per sample).
 aug = AugPipeline({
     "geometric": {
         "affine": {"p": 1.0, "rot_deg": 15.0, "scale_range": (0.9, 1.1)},
@@ -64,20 +71,85 @@ aug = AugPipeline({
     },
 })
 
-img  = torch.rand(2, 3, 256, 256)         # (B, C, H, W)
-mask = torch.ones(2, 1, 256, 256)         # optional
+# Input expectations: float tensor in [0, 1], shape (B, C, H, W).
+# (Numpy HWC uint8 is also accepted; paraug normalises internally.)
+img  = torch.rand(2, 3, 256, 256)         # (B, C, H, W) in [0, 1]
+mask = torch.ones(2, 1, 256, 256)         # optional segmentation mask
 
+# aug always returns a (img, mask) tuple — discard with `_` if no mask:
 img_out, mask_out = aug(img, mask=mask, seed_base=42, epoch=0, step=0)
+img_only, _      = aug(img,             seed_base=42, epoch=0, step=0)
 ```
 
-The same call on GPU is bit-exact within tolerance:
+Same call on GPU is bit-exact within tolerance:
 
 ```python
-img_gpu  = img.cuda()
-mask_gpu = mask.cuda()
-img_cuda, mask_cuda = aug(img_gpu, mask=mask_gpu, seed_base=42, epoch=0, step=0)
+img_cuda, mask_cuda = aug(img.cuda(), mask=mask.cuda(),
+                           seed_base=42, epoch=0, step=0)
 assert (img_out - img_cuda.cpu()).abs().max() < 2e-4
 ```
+
+### `seed_base`, `epoch`, `step`
+
+These three integers compose into the per-item RNG seed (along with the
+item's batch position). Same triple → same output for that item.
+
+- **`seed_base`** — run-level seed. Pin this in your config; reuse across
+  the whole training run.
+- **`epoch`** — change across epochs so the same dataset sample gets
+  different augmentation each pass.
+- **`step`** — change within an epoch so successive batches of the same
+  underlying dataset position (rare; usually `step = global_step`) don't
+  collide.
+
+For inference / one-shot use, all three may be 0 (`aug(img, seed_base=0)`).
+The split exists so training-time augmentation is reproducible **and**
+varies along the right axes; you don't have to use all three.
+
+## Where to put paraug in your training code
+
+The first instinct, transferred from `torchvision.transforms`, is to put
+augmentation inside `Dataset.__getitem__` so each worker processes one
+sample at a time. **Don't do this with paraug** — it's a batch-native GPU
+library, and per-sample CPU placement throws away the GPU acceleration.
+
+```python
+# ❌ DON'T — per-sample CPU augmentation in worker processes
+class MyDataset(torch.utils.data.Dataset):
+    def __init__(self):
+        self.aug = AugPipeline(cfg)
+    def __getitem__(self, idx):
+        img = load_image(idx)                    # (C, H, W), CPU
+        img, _ = self.aug(img.unsqueeze(0), seed_base=idx)   # CPU aug
+        return img.squeeze(0)
+
+# ✅ DO — Dataset loads only, train loop augments the GPU batch
+class MyDataset(torch.utils.data.Dataset):
+    def __getitem__(self, idx):
+        return load_image(idx)                   # just I/O + resize
+
+aug = AugPipeline(cfg, canvas_size=(224, 224))
+for step, (images, labels) in enumerate(loader):
+    images = images.to(device, non_blocking=True)
+    images, _ = aug(images, seed_base=42, epoch=epoch, step=step)
+    logits = model(images)
+    ...
+```
+
+Measured on a 5060 Ti at bs=32 canvas=224×224 (rough config of 5 ops):
+
+| Placement | Wall time / batch | Throughput |
+|---|---:|---:|
+| Per-sample CPU in Dataset | 219 ms | 146 samples/s |
+| **Batch GPU in train loop** | **75 ms** | **429 samples/s** |
+
+→ **2.9× speedup** just from moving augmentation to the right place. The
+gap grows with batch size, canvas size, and op count (paraug's per-op
+launch overhead is amortised across the batch).
+
+For larger-batch / larger-canvas setups, also see
+[`set_fast_noise(True)`](#performance-tuning-fast-noise-and-chunk_size)
+and [`chunk_size`](#performance-tuning-fast-noise-and-chunk_size) below.
 
 ## Compositing: `compose(foreground, background, mask)`
 
@@ -145,65 +217,84 @@ line_x = [x * t["scale_x"] for x in line_x]
 line_y = [y * t["scale_y"] for y in line_y]
 ```
 
-## Nested-rectangle layout: `place_into_canvas`
+## Nested-frame layout: `place_into_canvas`
 
-When the segmentation target is a sub-region of a larger frame — e.g. an
-ECG content rectangle sitting inside a paper sheet, which in turn sits on
-a desk — the model needs to learn that the wider surrounding rectangle is
-a *distractor*. Without random layout at training time, it will happily
-predict the whole paper sheet (or, worse, paper + desk) as the foreground.
+When the segmentation target is a sub-region of a larger frame — and the
+outer frame is itself rectangular — the model can latch onto the outer
+rectangle as a shortcut. Random layout at training time forces it to
+learn that the wider surrounding frame is a *distractor*.
 
 `place_into_canvas` embeds a foreground (and its mask) at a random
 position inside a larger constant-colour canvas, with random per-axis
 margins:
 
 ```python
-from paraug import place_into_canvas, AugPipeline, presets
+from paraug import place_into_canvas
 
-# ecg_content: (H, W, 3) uint8 — only the ECG region (pink grid + traces)
-# ecg_mask:    (H, W) uint8   — segmentation target
-ecg_padded, mask_padded = place_into_canvas(
-    ecg_content, ecg_mask,
+# content: (H, W, 3) uint8 — the inner region you actually want to segment
+# content_mask: (H, W) uint8 — segmentation target
+padded, padded_mask = place_into_canvas(
+    content, content_mask,
     canvas_size=(800, 1000),
-    fill=(245, 245, 245),               # near-white paper tone
-    margin_frac_range=(0.05, 0.30),     # 5-30% white margin per side
+    fill=(245, 245, 245),               # background colour
+    margin_frac_range=(0.05, 0.30),     # 5-30% margin per side, randomised
     seed_base=epoch_step_seed,
 )
-# `ecg_padded` is now a paper-sheet-sized canvas with the ECG content
-# placed off-centre; `mask_padded` is the ECG region within that canvas.
-
-# Pass through compose for the paper-on-scene composite + photo aug.
-aug = AugPipeline(presets.OOD_PRINTED_PAPER(), canvas_size=(512, 512))
-img, mask = aug.compose(ecg_padded, scene_bg, paper_outline_mask)
 ```
 
 The deterministic CPU-side per-item RNG (same `seed_base / epoch / step`
 convention as the primitives) makes every batch position bit-exactly
 reproducible across CPU and CUDA.
 
-## OOD-printed-paper preset
+## Performance tuning: `fast_noise` and `chunk_size`
 
-`paraug.presets.OOD_PRINTED_PAPER` is a hand-tuned config tuned for the
-"printed-paper-photographed-by-phone-indoors" deployment — typical for
-ECG, exam papers, receipts, forms. It combines the new v0.5.0
-photo-realism primitives (`paper_glare`, `spatial_color_cast`,
-`white_balance_shift`, `defocus_blur`) with `background_compose` and
-mild geometric warp:
+Two opt-in knobs trade a small contract for a large speed / VRAM win on
+GPU; both default to off so behaviour matches the docs above for callers
+that don't set them.
+
+### `paraug.set_fast_noise(True)` — speed
+
+Switches the three CPU-sample noise primitives (`gaussian_noise`,
+`jpeg_approx`, `salt_pepper_noise`) to GPU-side `torch.randn` /
+`torch.rand`. The CPU-path noise tensor is the per-call wall-time hot
+spot at large canvases (~350 ms at bs=20 canvas=1024) because it's
+filled in a Python per-item loop and copied to GPU; the GPU path takes
+~6 ms. **Measured ~1.85× end-to-end speedup** on a 5060 Ti at bs=20
+canvas=1024 with a 14-op pipeline.
+
+Contract: cuRAND ≠ MT19937, so `fast_noise=True` produces different
+output than `fast_noise=False` for the same seed. Determinism per
+`(seed_base, epoch, step)` is preserved within either mode. Leave off
+when running the parity tests; turn on for production training.
+
+### `AugPipeline(cfg, ..., chunk_size=N)` — VRAM
+
+Splits the batch into sub-batches of size `N` internally, runs the full
+pipeline on each, concatenates outputs. Per-call peak alloc scales with
+`N` instead of batch size. **30-40% peak alloc reduction** at bs=20 →
+chunk_size=5, with no wall-clock penalty (cache hits between primitives
+offset the per-chunk launch overhead).
+
+Contract: chunked output is deterministic per
+`(seed_base, epoch, step, chunk_size)` but the per-item seed namespace
+shifts when you change `chunk_size`, so don't expect bit-equality if you
+toggle it mid-run.
+
+## Optional presets
+
+`paraug.presets` ships hand-tuned configs for common deployment scenarios.
+Each preset returns a deep-copyable dict you can adjust:
 
 ```python
 from paraug import AugPipeline, presets
-
-cfg = presets.OOD_PRINTED_PAPER()
-# Point background_compose at a directory of real desk / floor / scene photos
-cfg["photometric"]["background_compose"]["photo_dir"] = "/path/to/scene_photos"
-
+cfg = presets.OOD_PRINTED_PAPER()         # one current preset; more may follow
 aug = AugPipeline(cfg, canvas_size=(512, 512))
-img, mask = aug.compose(paper_with_content, scene_bg, paper_outline_mask,
-                          seed_base=42)
 ```
 
-Deep-copy the preset and adjust individual primitive specs to suit your
-dataset.
+Presets are **not** the primary API — build your own config from the 31
+primitives (Quickstart above) for any task that doesn't match a preset
+exactly. See `paraug/presets.py` for what each preset contains and
+`examples/05_ood_printed_paper.py` for a full layered-synthesis example.
 
 ## Stacking extra spatial channels (GT-as-channel)
 
@@ -284,12 +375,47 @@ Intensity / color: `gamma`, `color_jitter`, `hue_shift`, `random_grayscale`,
 
 Noise: `gaussian_noise`, `salt_pepper_noise`, `salt_patches`.
 
-Blur / artifacts: `gaussian_blur`, `motion_blur`, `jpeg_approx`.
+Blur / artifacts: `gaussian_blur`, `motion_blur`, `jpeg_approx`,
+`defocus_blur`.
 
-Lighting: `vignette`, `specular_highlight`, `specular_streaks`.
+Lighting / glare: `vignette`, `specular_highlight`, `specular_streaks`,
+`paper_glare`.
+
+Colour cast / WB: `spatial_color_cast`, `white_balance_shift`.
 
 Content overlays: `cutout`, `paper_texture_overlay`, `watermark`,
 `random_text_overlay`, `background_compose`, `stains`, `creases`.
+
+### Inspecting spec keys: `paraug.describe(name)`
+
+Every primitive accepts a `{"p": ..., ...primitive-specific keys...}`
+spec dict. To find the spec keys (and their defaults) for any primitive
+without grep-ing the source, call `paraug.describe`:
+
+```python
+>>> import paraug
+>>> paraug.describe("affine")
+affine (geometric)
+==================
+Random rotation / scale / translation.
+
+    spec = {"p": prob, "rot_deg": float, "scale_range": (lo, hi),
+            "translate_frac": float (fraction of H/W)}
+
+spec keys (with defaults):
+  scale_range            = (0.85, 1.15)
+  p                      = 1.0
+  rot_deg                = 30.0
+  translate_frac         = 0.05
+
+>>> paraug.describe()            # one-line summary of every primitive
+>>> info = paraug.describe("affine", return_dict=True)   # programmatic
+>>> info["spec_keys"]
+{'scale_range': (0.85, 1.15), 'p': 1.0, 'rot_deg': 30.0, 'translate_frac': 0.05}
+```
+
+Defaults are extracted by AST walk of each primitive function's
+`spec.get(...)` calls, so they stay in sync with the implementation.
 
 ## Parity comparison
 
@@ -333,9 +459,13 @@ cpu_vs_cuda` locally and post the output).</sub>
 See `examples/`:
 
 - `01_quickstart.py` — minimal load → augment → save
+- `02_classification.py` — Dataset + DataLoader + train loop with
+  batch-GPU augmentation (the "Where to put paraug" pattern, end-to-end)
 - `02_mask_aware.py` — image + segmentation mask warped together
 - `03_cpu_gpu_parity.py` — same seed on CPU and CUDA, assert
   `max_abs_diff < 2e-4`
+- `04_compose_layered.py` — two-pass `compose` for layered synthesis
+- `05_ood_printed_paper.py` — `OOD_PRINTED_PAPER` preset, full pipeline
 
 ## Citation
 

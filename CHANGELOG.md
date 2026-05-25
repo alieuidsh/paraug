@@ -4,6 +4,42 @@ All notable changes to paraug are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-05-25
+
+### Added
+
+- **`paraug.describe(name)` / `paraug.describe()`** — primitive introspection
+  helper. Prints (or returns as a dict) the docstring plus the spec keys
+  with their default values, extracted by AST walk of each primitive
+  function's `spec.get(...)` calls (always in sync with the implementation).
+  No more grep-ing the source to find out what spec keys a primitive
+  accepts; `paraug.describe("affine")` prints the answer.
+- **`examples/02_classification.py`** — end-to-end Dataset + DataLoader +
+  train-loop with batch-GPU augmentation. The "Where to put paraug" pattern
+  from the README, runnable with synthetic data so no dataset download.
+
+### Changed (documentation only — no behaviour change)
+
+- **README rewritten** to lead with the general-purpose framing (31
+  primitives, GPU-batch-native, bit-exact CPU/GPU parity) instead of any
+  specific use case. New sections:
+  - "Where to put paraug in your training code" — explicit DO / DON'T
+    with a 2.9× speedup benchmark for batch-GPU vs per-sample-CPU
+    placement on a 5060 Ti at bs=32 canvas=224×224.
+  - "Performance tuning: `fast_noise` and `chunk_size`" — both opt-in
+    flags now have a dedicated subsection with the contract and the
+    measured win.
+  - Quickstart updated to show the `img, _ = aug(...)` tuple-discard
+    pattern explicitly, document the input dtype/range expectation
+    (`float in [0, 1], (B, C, H, W)`), and explain the
+    `seed_base / epoch / step` triple.
+- Preset section demoted to a small "Optional presets" pointer — presets
+  are no longer documented as the primary API.
+- Several docstrings and comments cleaned of domain-specific examples
+  (e.g. `layout.py`, `pipeline.compose` docstring, `presets.py` comments)
+  to keep the public surface neutral.
+- Chinese README (`README_zh-TW.md`) mirrors the English rewrite.
+
 ## [0.6.0] - 2026-05-25
 
 ### Added
@@ -51,9 +87,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   Peak alloc drops 30-40% with no wall-clock cost (cache hits between
   primitives offset the per-chunk launch overhead). Use this when a large
-  effective batch fits the model forward but not the aug-side peak — e.g.
-  PaperEdgeV13b on a 16 GB 4080 at bs=20 OOMs on aug intermediates before
-  model fwd even starts.
+  effective batch fits the model forward but not the aug-side peak —
+  e.g. a 60 M-param segmentation model on a 16 GB GPU at bs=20 OOMs on
+  aug intermediates before model fwd even starts.
 
   **Output determinism contract**: chunk_size=N gives reproducible output
   for the same `(seed_base, epoch, step, chunk_size)`, but the per-item

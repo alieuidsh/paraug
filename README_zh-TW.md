@@ -9,10 +9,15 @@
 
 **Languages**: [English](README.md) | 繁體中文
 
-`paraug` 是一個 PyTorch 原生的影像增強函式庫，保證**相同的 seed 在 CPU 與
-CUDA 上產生相同的輸出**。每個 primitive 的隨機數都在 CPU 端取樣，不受
-tensor 在哪個 device 影響 —— 即使訓練流程在 CPU/GPU 階段間隨機切換、或
-unit test 換 backend 跑，結果仍然 deterministic。
+`paraug` 是一個通用 PyTorch 原生影像增強函式庫。**31 個 primitive**
+（7 geometric + 24 photometric）、**GPU batch native**、**CPU/GPU
+位元級精確對齊**：相同的 seed 在 CPU 跟 CUDA 上產生相同的輸出。每個
+primitive 的隨機數都在 CPU 端取樣，不受 tensor 在哪個 device 影響 ——
+即使訓練流程在 CPU/GPU 階段間隨機切換、或 unit test 換 backend 跑，結果
+仍然 deterministic。
+
+需要跨硬體可重現性時可以當 `kornia.augmentation` / `torchvision.v2` 的
+drop-in；需要 GPU 加速時可以當 `albumentations` 的 batch-native 替代。
 
 ## 為什麼需要 parity
 
@@ -48,6 +53,8 @@ pip install git+https://github.com/alieuidsh/paraug.git
 import torch
 from paraug import AugPipeline
 
+# 從 31 個 primitive 裡自己組 config。每個 op 的 `p` 獨立判斷
+# (每個 sample 各自決定要不要套這個 op)。
 aug = AugPipeline({
     "geometric": {
         "affine": {"p": 1.0, "rot_deg": 15.0, "scale_range": (0.9, 1.1)},
@@ -60,20 +67,79 @@ aug = AugPipeline({
     },
 })
 
-img  = torch.rand(2, 3, 256, 256)         # (B, C, H, W)
-mask = torch.ones(2, 1, 256, 256)         # optional
+# 輸入規格: float tensor in [0, 1], shape (B, C, H, W)。
+# (numpy HWC uint8 也接受 — paraug 內部會 normalise)
+img  = torch.rand(2, 3, 256, 256)         # (B, C, H, W) in [0, 1]
+mask = torch.ones(2, 1, 256, 256)         # 可選的 segmentation mask
 
+# aug 一律回 (img, mask) tuple — 沒 mask 用 `_` 接住:
 img_out, mask_out = aug(img, mask=mask, seed_base=42, epoch=0, step=0)
+img_only, _      = aug(img,             seed_base=42, epoch=0, step=0)
 ```
 
 同樣的 call 跑在 GPU 上，輸出在容差內位元級對齊：
 
 ```python
-img_gpu  = img.cuda()
-mask_gpu = mask.cuda()
-img_cuda, mask_cuda = aug(img_gpu, mask=mask_gpu, seed_base=42, epoch=0, step=0)
+img_cuda, mask_cuda = aug(img.cuda(), mask=mask.cuda(),
+                           seed_base=42, epoch=0, step=0)
 assert (img_out - img_cuda.cpu()).abs().max() < 2e-4
 ```
+
+### `seed_base`、`epoch`、`step`
+
+三個整數合起來決定 per-item RNG seed (再配合 item 在 batch 內的位置)。
+同一個 triple → 同一個 item 同一個輸出。
+
+- **`seed_base`** — run-level seed。pin 在 config 裡，整個訓練 run 都用同一個。
+- **`epoch`** — 跨 epoch 換, 讓同一個資料 sample 每個 epoch 都拿到不同 aug。
+- **`step`** — epoch 內換, 通常就是 `global_step`。
+
+Inference / 一次性使用時三個都傳 0 就好 (`aug(img, seed_base=0)`)。
+拆三個是讓訓練時的 aug 可以 reproducible **而且** 在對的軸上變化 —
+不一定要全用。
+
+## paraug 應該放在訓練程式碼的哪裡
+
+第一直覺 (從 `torchvision.transforms` 來的) 是把 aug 塞進
+`Dataset.__getitem__`, 讓每個 worker 一個 sample 處理。**paraug 不要這樣** —
+它是 batch-native GPU library, 放 per-sample CPU 就把 GPU 加速丟掉了。
+
+```python
+# ❌ DON'T — Dataset 內 per-sample CPU aug
+class MyDataset(torch.utils.data.Dataset):
+    def __init__(self):
+        self.aug = AugPipeline(cfg)
+    def __getitem__(self, idx):
+        img = load_image(idx)                    # (C, H, W), CPU
+        img, _ = self.aug(img.unsqueeze(0), seed_base=idx)   # CPU aug
+        return img.squeeze(0)
+
+# ✅ DO — Dataset 只負責 load, train loop 對 GPU batch 做 aug
+class MyDataset(torch.utils.data.Dataset):
+    def __getitem__(self, idx):
+        return load_image(idx)                   # 只做 I/O + resize
+
+aug = AugPipeline(cfg, canvas_size=(224, 224))
+for step, (images, labels) in enumerate(loader):
+    images = images.to(device, non_blocking=True)
+    images, _ = aug(images, seed_base=42, epoch=epoch, step=step)
+    logits = model(images)
+    ...
+```
+
+5060 Ti 實測 bs=32 canvas=224×224 (5 個 op 的設定):
+
+| 放法 | wall time / batch | throughput |
+|---|---:|---:|
+| Dataset 內 per-sample CPU | 219 ms | 146 samples/s |
+| **Train loop GPU batch** | **75 ms** | **429 samples/s** |
+
+→ 只是換放的位置就 **2.9× 加速**。batch 越大、canvas 越大、op 越多, 差距越大
+(paraug 的 per-op launch overhead 在 batch 內被均攤掉)。
+
+更大 batch / canvas 的設定還可以加
+[`set_fast_noise(True)`](#效能調整fast_noise-跟-chunk_size) 跟
+[`chunk_size`](#效能調整fast_noise-跟-chunk_size), 見下。
 
 ## 合成：`compose(foreground, background, mask)`
 
@@ -136,54 +202,71 @@ line_y = [y * t["scale_y"] for y in line_y]
 
 ## 巢狀矩形 layout：`place_into_canvas`
 
-分割目標如果是**更大畫面中的子區域** —— 例如 ECG 內容矩形在紙裡、紙又在桌上 ——
-模型需要學「外圈矩形是干擾物要忽略」。沒做隨機 layout, 訓練資料每個 sample
-都是「內容貼滿整張圖」, 推理時模型會把整張紙 (甚至紙+桌面) 都標成 foreground。
+分割目標如果是**更大畫面中的子區域** —— 而且外圈本身又是矩形 —— 模型容易
+偷懶用外圈矩形當答案。訓練時加隨機 layout 才能逼它學「外圈是干擾物要忽略」。
 
 `place_into_canvas` 把 foreground (跟 mask) 放在更大畫布的隨機位置, 周圍填
 constant 顏色, 邊距隨機:
 
 ```python
-from paraug import place_into_canvas, AugPipeline, presets
+from paraug import place_into_canvas
 
-# ecg_content: (H, W, 3) uint8 — 只有 ECG 區（pink 格 + trace）
-# ecg_mask:    (H, W) uint8   — segmentation 目標
-ecg_padded, mask_padded = place_into_canvas(
-    ecg_content, ecg_mask,
+# content: (H, W, 3) uint8 — 真正要分割的內圈區域
+# content_mask: (H, W) uint8 — segmentation 目標
+padded, padded_mask = place_into_canvas(
+    content, content_mask,
     canvas_size=(800, 1000),
-    fill=(245, 245, 245),               # 接近白紙
-    margin_frac_range=(0.05, 0.30),     # 每邊 5-30% 白邊
+    fill=(245, 245, 245),               # 背景填色
+    margin_frac_range=(0.05, 0.30),     # 每邊 5-30% margin, 隨機
     seed_base=epoch_step_seed,
 )
-# 接著 compose 做 paper-on-scene 合成 + 拍照 aug
-aug = AugPipeline(presets.OOD_PRINTED_PAPER(), canvas_size=(512, 512))
-img, mask = aug.compose(ecg_padded, scene_bg, paper_outline_mask)
 ```
 
 per-item RNG 跟 primitive 同一套 (`seed_base / epoch / step`), CPU/CUDA
 bit-exact 重現。
 
-## OOD 印刷紙 preset
+## 效能調整：`fast_noise` 跟 `chunk_size`
 
-`paraug.presets.OOD_PRINTED_PAPER` 是 v0.5.0 內附的調好的 config, 對應
-「**用手機在室內拍印出來的紙**」這種部署 (ECG、考卷、收據、表單通用)。
-組合新增的 photo-realism primitive (`paper_glare`, `spatial_color_cast`,
-`white_balance_shift`, `defocus_blur`) 加上 `background_compose` 跟輕量
-geometric warp:
+兩個 opt-in flag, 在 GPU 上用小小的契約換大的速度 / VRAM 收益。預設都 OFF,
+不設的話行為跟上面 doc 一致。
+
+### `paraug.set_fast_noise(True)` — 速度
+
+把三個 CPU-sample noise primitive (`gaussian_noise`, `jpeg_approx`,
+`salt_pepper_noise`) 切到 GPU-side `torch.randn` / `torch.rand`。原本
+CPU-path 在 canvas 大時是 per-call 時間大戶 (canvas 1024 bs=20 ~350 ms),
+因為要在 Python per-item loop 填好再 copy 到 GPU; GPU path ~6 ms。
+**5060 Ti bs=20 canvas=1024 + 14 op pipeline 實測 1.85× end-to-end 加速**。
+
+契約: cuRAND ≠ MT19937, 所以 `fast_noise=True` 跟 `fast_noise=False` 同 seed
+不會等值。Per `(seed_base, epoch, step)` 的 determinism 在各 mode 內都保留。
+跑 parity test 時關掉; production training 開。
+
+### `AugPipeline(cfg, ..., chunk_size=N)` — VRAM
+
+把 batch 內部切成大小 N 的 sub-batches 各跑完整 pipeline 然後 concat。
+per-call peak alloc 跟 N 走不跟 batch size 走。**bs=20 → chunk_size=5 實測
+peak alloc 降 30-40%**, wall-clock 不變 (chunk 間 cache hit 抵 per-chunk
+launch overhead)。
+
+契約: chunked 輸出 per `(seed_base, epoch, step, chunk_size)` deterministic,
+但 per-item seed namespace 跟 chunk_size 連動, 改 chunk_size 中間不要期待
+bit-equality。
+
+## Optional presets
+
+`paraug.presets` 附幾個調好的 config 給常見部署場景。每個 preset 回 deep-copy
+過的 dict 可以再改:
 
 ```python
 from paraug import AugPipeline, presets
-
-cfg = presets.OOD_PRINTED_PAPER()
-# 指 background_compose 用真實桌面 / 地板 / 場景照片
-cfg["photometric"]["background_compose"]["photo_dir"] = "/path/to/scene_photos"
-
+cfg = presets.OOD_PRINTED_PAPER()      # 目前一個, 之後可能加更多
 aug = AugPipeline(cfg, canvas_size=(512, 512))
-img, mask = aug.compose(paper_with_content, scene_bg, paper_outline_mask,
-                          seed_base=42)
 ```
 
-deepcopy 後改各 primitive spec 就能 fine-tune 給你的 dataset。
+Preset **不是**主要 API — 任何 preset 不完全合的任務都建議從 31 個 primitive
+自己組 config (見快速上手)。`paraug/presets.py` 看每個 preset 的內容,
+`examples/05_ood_printed_paper.py` 是完整的 layered-synthesis 範例。
 
 ## 把 GT 當 image 額外 channel 一起 warp
 

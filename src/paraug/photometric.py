@@ -1209,12 +1209,13 @@ def background_compose(img, mask, spec, seed_base, epoch, step):
 
 
 # ─── 2026-05-23 v0.5.0 — OOD photo-realism primitives ────────────────
-# Added in response to lab observation that a paper-edge model trained on
-# synthetic ECG-on-DTD-background saturates at IoU 0.999+ on synthetic val
-# yet fails on real iPhone photos. The gap is dominated by photometric
-# realism (lighting / colour / glare / focus) that earlier primitives only
-# partially modelled. See README "OOD-printed-paper preset" for a
-# recommended config that combines these with the layout helper.
+# Added to close the synth-vs-real gap for printed-paper deployments
+# (forms, receipts, exam papers, etc.): a segmentation model trained on
+# synthetic background-composited paper saturates at near-perfect IoU on
+# synthetic val yet drops sharply on real phone photos. The gap is
+# dominated by photometric realism (lighting / colour / glare / focus)
+# that earlier primitives only partially modelled. See the `OOD_PRINTED_PAPER`
+# preset for a recommended config that combines these with the layout helper.
 
 
 def spatial_color_cast(img, mask, spec, seed_base, epoch, step):

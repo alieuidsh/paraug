@@ -44,7 +44,7 @@ compose()
 `compose(foreground, background, mask)` blends a foreground onto a
 background through a mask, then runs the configured aug. See the method
 docstring for the full data flow. It is the building block for layered
-synthesis (e.g. "ECG printed on paper, then paper photographed in a
+synthesis (e.g. "content printed on paper, then paper photographed in a
 scene" = two compose calls).
 """
 from typing import Dict, Optional, Tuple, Union
@@ -369,7 +369,7 @@ class AugPipeline:
            colour, blur, …). The mask passes through photometric unchanged.
         4. **canvas_size** stretch, if the pipeline was built with one.
 
-        Layered synthesis (e.g. "ECG printed on paper → paper photographed
+        Layered synthesis (e.g. "content printed on paper → paper photographed
         in a scene") is two `compose` calls: pass 1 output becomes pass 2's
         `foreground`. Use two `AugPipeline` instances if the two passes need
         different aug (e.g. print artefacts vs camera lighting).
