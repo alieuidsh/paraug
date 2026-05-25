@@ -302,3 +302,43 @@ def test_chunk_size_unchunked_matches_when_batch_fits():
     img1, _ = a1.compose(fg, bg, mask, seed_base=11)
     img2, _ = a2.compose(fg, bg, mask, seed_base=11)
     assert torch.equal(img1, img2)
+
+
+# ─── v0.6.0: small packaging niceties ─────────────────────────────────
+def test_list_primitives_geometric():
+    from paraug.geometric import list_primitives, GEOMETRIC_PRIMITIVES
+    lp = list_primitives()
+    assert isinstance(lp, list)
+    assert lp == sorted(lp)  # deterministic order
+    assert set(lp) == set(GEOMETRIC_PRIMITIVES.keys())
+
+
+def test_list_primitives_photometric():
+    from paraug.photometric import list_primitives, PHOTOMETRIC_PRIMITIVES
+    lp = list_primitives()
+    assert isinstance(lp, list)
+    assert lp == sorted(lp)
+    assert set(lp) == set(PHOTOMETRIC_PRIMITIVES.keys())
+
+
+def test_pipeline_accepts_config_none():
+    """AugPipeline(config=None) and AugPipeline() should both be valid (empty pipeline)."""
+    a1 = AugPipeline()
+    a2 = AugPipeline(None)
+    a3 = AugPipeline({})
+    # All three behave as a no-op pipeline.
+    img = torch.rand(2, 3, 16, 16)
+    mask = (torch.rand(2, 1, 16, 16) > 0.5).float()
+    out1, _ = a1(img, mask, seed_base=0)
+    out2, _ = a2(img, mask, seed_base=0)
+    out3, _ = a3(img, mask, seed_base=0)
+    assert torch.equal(out1, out2) and torch.equal(out2, out3)
+
+
+def test_submodule_reexport():
+    import paraug
+    # Public submodule access for callers that want list_primitives().
+    assert hasattr(paraug, "geometric")
+    assert hasattr(paraug, "photometric")
+    assert callable(paraug.geometric.list_primitives)
+    assert callable(paraug.photometric.list_primitives)

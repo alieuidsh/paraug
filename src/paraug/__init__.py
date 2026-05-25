@@ -20,8 +20,10 @@ from .geometric import GEOMETRIC_PRIMITIVES
 from .photometric import PHOTOMETRIC_PRIMITIVES
 from .layout import place_into_canvas
 from . import presets
+from . import geometric
+from . import photometric
 
-__version__ = "0.5.4"
+__version__ = "0.6.0"
 
 __all__ = [
     "AugPipeline",
@@ -34,5 +36,7 @@ __all__ = [
     "PHOTOMETRIC_PRIMITIVES",
     "place_into_canvas",
     "presets",
+    "geometric",
+    "photometric",
     "__version__",
 ]

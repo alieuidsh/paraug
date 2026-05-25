@@ -378,3 +378,10 @@ GEOMETRIC_PRIMITIVES = {
     "optical_distortion": optical_distortion,
     "random_shadow": random_shadow,
 }
+
+
+def list_primitives() -> list:
+    """Return sorted list of geometric primitive names available in this build.
+    Order is deterministic so callers building op pools see the same indexing
+    across machines and runs."""
+    return sorted(GEOMETRIC_PRIMITIVES.keys())

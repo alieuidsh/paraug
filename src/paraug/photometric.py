@@ -1475,3 +1475,10 @@ PHOTOMETRIC_PRIMITIVES = {
     "white_balance_shift": white_balance_shift,
     "defocus_blur": defocus_blur,
 }
+
+
+def list_primitives() -> list:
+    """Return sorted list of photometric primitive names available in this build.
+    Order is deterministic so callers building op pools see the same indexing
+    across machines and runs."""
+    return sorted(PHOTOMETRIC_PRIMITIVES.keys())

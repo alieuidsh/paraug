@@ -162,10 +162,14 @@ class AugPipeline:
             size. Default None keeps output size equal to input size.
     """
 
-    def __init__(self, config: Dict,
+    def __init__(self, config: Optional[Dict] = None,
                  n_image_channels: Optional[int] = None,
                  canvas_size: Optional[Tuple[int, int]] = None,
                  chunk_size: Optional[int] = None):
+        # config=None defaults to an empty dict — handy for callers that want
+        # to subclass AugPipeline and add primitives at __init__ time without
+        # going through the dict path.
+        config = config if config is not None else {}
         self.config = config
         self.n_image_channels = n_image_channels
         if n_image_channels is not None and n_image_channels < 1:

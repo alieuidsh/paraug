@@ -4,6 +4,35 @@ All notable changes to paraug are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-05-25
+
+### Added
+
+- **`paraug.geometric.list_primitives()`** / **`paraug.photometric.list_primitives()`** —
+  return sorted list of primitive names available in this build. Useful for
+  callers that want to enumerate the op space (e.g. building a config dict
+  programmatically, or running an op-coverage sweep). Sorted ordering keeps
+  cross-machine indexing deterministic.
+- `paraug.geometric` and `paraug.photometric` submodules are now re-exported
+  at the package level: `paraug.geometric.list_primitives()`.
+
+### Changed
+
+- `AugPipeline(config)` now accepts `config=None` and defaults to an empty
+  dict, which gives an effective no-op pipeline. Convenient for callers
+  that subclass `AugPipeline` and register primitives outside the dict
+  path, or that want a placeholder pipeline before populating it.
+
+### Yanked
+
+- **`0.5.5` has been yanked from PyPI** — that revision added a feature
+  that, on review, fell outside paraug's intended scope as a generic
+  image-augmentation library and was better factored as caller-side code
+  rather than library API. `0.6.0` keeps the small packaging niceties
+  from that revision (listed above) and drops the rest. Existing
+  `pip install paraug==0.5.5` installs keep working; new installs should
+  use `0.6.0`.
+
 ## [0.5.4] - 2026-05-25
 
 ### Added
