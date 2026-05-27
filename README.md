@@ -10,8 +10,9 @@
 **Languages**: English | [繁體中文](README_zh-TW.md)
 
 `paraug` is a general-purpose PyTorch-native augmentation library.
-**31 primitives** (7 geometric + 24 photometric), **GPU-batch-native**,
-with **bit-exact CPU/GPU parity**: the same seed produces the same output
+**35 primitives** (7 geometric + 28 photometric, including CutMix /
+MixUp / GridMask / RandomErasing), **GPU-batch-native**, with
+**bit-exact CPU/GPU parity**: the same seed produces the same output
 on CPU and CUDA. Per-primitive RNG is sampled on CPU regardless of tensor
 device, so a training run that randomly switches between CPU and GPU
 stages — or a unit test that swaps backends — stays deterministic.
@@ -368,7 +369,7 @@ primitives never modify `mask`.
 | `random_shadow` | Soft-blurred triangle multiplicative shadow |
 | `tps` | Thin-plate-spline-like warp from low-res control grid |
 
-### Photometric (24)
+### Photometric (28)
 
 Intensity / color: `gamma`, `color_jitter`, `hue_shift`, `random_grayscale`,
 `lighting`, `clahe`, `local_contrast`, `sharpness`.
@@ -385,6 +386,43 @@ Colour cast / WB: `spatial_color_cast`, `white_balance_shift`.
 
 Content overlays: `cutout`, `paper_texture_overlay`, `watermark`,
 `random_text_overlay`, `background_compose`, `stains`, `creases`.
+
+Region drop / pair mixing (v0.7.0): `random_erasing`, `grid_mask`,
+`cutmix`, `mixup`. See [CutMix / MixUp label mixing](#cutmix--mixup-label-mixing)
+below for the `paraug.mix_info` helper that recovers the per-item
+(λ, partner_idx) for classification training.
+
+### CutMix / MixUp label mixing
+
+`cutmix` and `mixup` mix pairs of items in a batch. For classification
+training the *labels* need to be mixed by the same λ paraug used
+internally. paraug doesn't track labels — `paraug.mix_info()` recovers
+the (λ, partner_idx, gate) tensors using the same seed:
+
+```python
+import paraug
+
+aug = paraug.AugPipeline({"photometric": {
+    "cutmix": {"p": 1.0, "alpha": 1.0},
+}})
+
+for step, (images, labels) in enumerate(loader):
+    images = images.to(device)
+    images, _ = aug(images, seed_base=step, epoch=epoch, step=step)
+    # Recover λ + partner using the same triple paraug used:
+    info = paraug.mix_info("cutmix", seed_base=step, epoch=epoch,
+                            step=step, B=images.shape[0],
+                            p=1.0, alpha=1.0)
+    labels_a = labels                       # original labels
+    labels_b = labels[info["perm"]]         # partner labels
+    lam = info["lam"].to(device)            # (B,) sampled λ
+    # mix labels per-item; only items where info["gate"] is True
+    # actually got cutmix-augmented.
+    # ...your loss code...
+```
+
+For exact area-ratio λ after rounding (cutmix only), pass
+`primitive="cutmix_actual_lam"` and `img_shape=(B, C, H, W)`.
 
 ### Inspecting spec keys: `paraug.describe(name)`
 
@@ -421,7 +459,7 @@ Defaults are extracted by AST walk of each primitive function's
 
 | Library | Bit-exact CPU↔GPU | Per-item RNG | GPU native | Mask-aware | Batch-native | # Geometric¹ | # Photometric¹ | License |
 |---|---|---|---|---|---|---|---|---|
-| **paraug** | **✓** (1e-6 / 2e-4)² | ✓ | ✓ (torch) | ✓ | ✓ | 7 | 24 | Apache 2.0 |
+| **paraug** | **✓** (1e-6 / 2e-4)² | ✓ | ✓ (torch) | ✓ | ✓ | 7 | 28 | Apache 2.0 |
 | albumentations | ✗ (numpy-only) | ✓ | ✗ | ✓ | partial | ~20 | ~50+ | MIT |
 | kornia | ✗ (device-local RNG) | ✓ | ✓ (torch) | ✓ | ✓ | ~10 | ~45 | Apache 2.0 |
 | torchvision.v2 | ✗ (device-local RNG) | ✓ | ✓ (torch) | partial | ✓ | ~18 | ~12 | BSD-3 |
@@ -453,6 +491,60 @@ cpu_vs_cuda` locally and post the output).</sub>
 - You need 50+ primitive options out of the box → try `albumentations` or `imgaug`
 - You need PIL-style per-image API → try `augly`
 - You need built-in compositional ops like `OneOf` / `SomeOf` → try `albumentations`
+
+## Migration from torchvision / albumentations / kornia
+
+paraug uses a dict-based config instead of the `Compose([...])` flat list,
+but the underlying ops are the same. Direct equivalents:
+
+| torchvision.transforms.v2 | albumentations | kornia.augmentation | **paraug** |
+|---|---|---|---|
+| `RandomAffine` | `Affine` | `RandomAffine` | `affine` |
+| `RandomPerspective` | `Perspective` | `RandomPerspective` | `perspective` |
+| `ElasticTransform` | `ElasticTransform` | `RandomElasticTransform` | `elastic_transform` |
+| `RandomResizedCrop` | `RandomResizedCrop` | `RandomResizedCrop` | `random_crop_pad` + `canvas_size` |
+| `ColorJitter` | `ColorJitter` | `ColorJitter` | `color_jitter` |
+| `RandomGrayscale` | `ToGray` | `RandomGrayscale` | `random_grayscale` |
+| `GaussianBlur` | `GaussianBlur` | `RandomGaussianBlur` | `gaussian_blur` |
+| `GaussianNoise` | `GaussNoise` | `RandomGaussianNoise` | `gaussian_noise` |
+| `RandomErasing` | `CoarseDropout` | `RandomErasing` | `random_erasing` |
+| (none) | `GridDropout` | `RandomGridShuffle` (no equiv) | `grid_mask` |
+| `CutMix` | (none) | `RandomCutMixV2` | `cutmix` (+ `paraug.mix_info`) |
+| `MixUp` | (none) | `RandomMixUpV2` | `mixup` (+ `paraug.mix_info`) |
+| `HorizontalFlip` / `VerticalFlip` | `HorizontalFlip` | `RandomHorizontalFlip` | use `affine` with `rot_deg=0` (paraug doesn't have a separate flip yet — open an issue if you need one) |
+
+Example: a typical classification pipeline rewritten
+
+```python
+# torchvision.transforms.v2 style:
+#     transforms.Compose([
+#         transforms.RandomResizedCrop(224),
+#         transforms.RandomHorizontalFlip(),
+#         transforms.ColorJitter(0.4, 0.4, 0.4),
+#         transforms.RandomErasing(p=0.25),
+#         transforms.ToTensor(),
+#     ])
+
+# paraug equivalent (canvas_size handles resize; flip TBD — affine is the closest match):
+import paraug
+aug = paraug.AugPipeline({
+    "geometric":   {"affine":         {"p": 1.0, "rot_deg": 5.0, "scale_range": (0.8, 1.0)}},
+    "photometric": {"color_jitter":   {"p": 1.0, "brightness": 0.4, "contrast": 0.4, "saturation": 0.4},
+                    "random_erasing": {"p": 0.25, "size_frac_range": (0.02, 0.2)}},
+}, canvas_size=(224, 224))
+
+# Train loop — apply on the GPU batch, NOT inside Dataset.__getitem__:
+for step, (images, labels) in enumerate(loader):
+    images = images.to(device, non_blocking=True)
+    images, _ = aug(images, seed_base=42, epoch=epoch, step=step)
+    logits = model(images)
+    # ...
+```
+
+See [`Where to put paraug`](#where-to-put-paraug-in-your-training-code)
+for why the train-loop placement (vs `Dataset.__getitem__`) matters —
+paraug is GPU-batch-native, and per-sample CPU placement throws away
+2-3× speedup.
 
 ## Examples
 

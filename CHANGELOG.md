@@ -4,6 +4,50 @@ All notable changes to paraug are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-05-27
+
+### Added — 4 modern aug primitives
+
+- **`random_erasing`** — Zhong et al. 2017. Rectangular region replaced
+  with sampled noise (`normal` / `uniform` / `constant` fill modes) at a
+  per-item randomised position and aspect ratio. More aggressive than
+  the existing `cutout` (constant fill).
+- **`grid_mask`** — Chen et al. 2020. Drop a regular grid of small square
+  regions across the whole image. Spec includes `ratio` (drop fraction
+  per cell), `d_range` (cell size in px), and `rotation_deg` (max grid
+  rotation per item).
+- **`cutmix`** — Yun et al. 2019. Cut a rectangular region from a
+  batch-partner image B and paste it into image A. Mixing fraction
+  λ ~ Beta(α, α). Partner is `perm[i]` for sample i, where `perm` is a
+  per-call randperm of the batch (paraug picks it deterministically from
+  `seed_base / epoch / step`).
+- **`mixup`** — Zhang et al. 2017. Linear interpolation
+  `out[i] = λ·img[i] + (1-λ)·img[perm[i]]`, λ ~ Beta(α, α), clipped to
+  [0.01, 0.99].
+
+### Added — `paraug.mix_info(...)` helper
+
+CutMix and MixUp need labels mixed by the same λ paraug used. paraug
+doesn't track labels — `mix_info("cutmix" | "mixup", seed_base, epoch,
+step, B, p=..., alpha=...)` returns `{"lam": (B,) float, "perm": (B,)
+long, "gate": (B,) bool}` so the train loop can mix labels itself.
+`mix_info("cutmix_actual_lam", ..., img_shape=(B, C, H, W))` returns the
+post-rounding area ratio for tight CutMix reproduction.
+
+### Added — migration guide
+
+README has a "Migration from torchvision / albumentations / kornia"
+section mapping common ops to paraug equivalents, with a worked
+classification-pipeline rewrite.
+
+### Compatibility
+
+- No change to existing primitives or AugPipeline API.
+- 4 new primitives auto-included in `paraug.photometric.list_primitives()`
+  (28 photometric total, was 24).
+- 24 new tests in `test_v070_modern_aug.py` including CPU/GPU parity for
+  all 4 primitives (146 → 170 tests).
+
 ## [0.6.2] - 2026-05-25
 
 ### Added

@@ -58,6 +58,12 @@ SALT = {
     "white_balance_shift":  53,
     "defocus_blur":         54,
     "place_into_canvas":    55,
+    # v0.7.0 modern aug primitives
+    "random_erasing":   61,
+    "grid_mask":        62,
+    "cutmix":           63,
+    "mixup":            64,
+    "cutmix_perm":      65,   # batch-partner permutation (shared by cutmix/mixup)
 }
 
 

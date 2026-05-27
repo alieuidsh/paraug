@@ -1445,6 +1445,225 @@ def defocus_blur(img, mask, spec, seed_base, epoch, step):
     return out, mask
 
 
+# ─── 2026-05-27 v0.7.0 — modern aug primitives ────────────────────────
+# Added to fill the "everyone else has these" gap: random_erasing /
+# grid_mask are per-item region drop, cutmix / mixup are batch-level
+# pair mixing. Per-item RNG flows through the same `per_item_seed` chain
+# as the rest, so CPU/GPU parity is preserved.
+
+
+def random_erasing(img, mask, spec, seed_base, epoch, step):
+    """Random rectangular region replaced with a noise sample.
+
+    Closest sibling: `cutout` (constant fill). RandomErasing samples each
+    erased pixel independently, which is the original Zhong-2017 definition
+    and produces a more aggressive aug signal than constant-fill cutout.
+
+    spec = {"p": prob, "size_frac_range": (lo, hi),
+            "aspect_range": (lo, hi),  # h/w aspect
+            "fill_mode": "normal" | "uniform" | "constant",
+            "fill_value": float (used when fill_mode="constant")}
+    """
+    B, C, H, W = img.shape
+    p = float(spec.get("p", 1.0))
+    slo, shi = spec.get("size_frac_range", (0.02, 0.2))
+    arlo, arhi = spec.get("aspect_range", (0.3, 3.3))
+    fill_mode = spec.get("fill_mode", "normal")
+    fill_value = float(spec.get("fill_value", 0.5))
+
+    gate = torch.zeros(B, dtype=torch.bool)
+    region_mask = torch.zeros(B, 1, H, W, dtype=img.dtype)
+    # Per-item rectangle + fill noise (CPU-side for parity)
+    fill_tensor = torch.zeros_like(img.cpu()) if img.is_cuda else torch.zeros_like(img)
+    for i in range(B):
+        g = cpu_generator(per_item_seed(seed_base, epoch, step, i, "random_erasing"))
+        if not sample_bool(p, g):
+            continue
+        gate[i] = True
+        area_frac = sample_uniform(slo, shi, g)
+        aspect = sample_uniform(arlo, arhi, g)
+        eh = max(1, int(round(math.sqrt(area_frac * H * W * aspect))))
+        ew = max(1, int(round(math.sqrt(area_frac * H * W / aspect))))
+        eh = min(eh, H); ew = min(ew, W)
+        cy = int(sample_uniform(0, H - eh, g))
+        cx = int(sample_uniform(0, W - ew, g))
+        region_mask[i, 0, cy:cy + eh, cx:cx + ew] = 1.0
+        if fill_mode == "normal":
+            fill_tensor[i, :, cy:cy + eh, cx:cx + ew] = (
+                torch.empty(C, eh, ew).normal_(0.5, 0.2, generator=g).clamp(0, 1))
+        elif fill_mode == "uniform":
+            fill_tensor[i, :, cy:cy + eh, cx:cx + ew] = (
+                torch.empty(C, eh, ew).uniform_(0.0, 1.0, generator=g))
+        elif fill_mode == "constant":
+            fill_tensor[i, :, cy:cy + eh, cx:cx + ew] = fill_value
+        else:
+            raise ValueError(
+                f"random_erasing fill_mode must be normal/uniform/constant; "
+                f"got {fill_mode!r}")
+    region_d = region_mask.to(img.device).expand_as(img) > 0.5
+    fill_d = fill_tensor.to(img.device)
+    erased = torch.where(region_d, fill_d, img)
+    gate_d = gate.to(img.device).view(B, 1, 1, 1)
+    out = torch.where(gate_d.expand_as(img), erased, img)
+    return out, mask
+
+
+def grid_mask(img, mask, spec, seed_base, epoch, step):
+    """GridMask (Chen 2020): drop a regular grid of square regions across
+    the whole image. Encourages the model to use distributed features.
+
+    spec = {"p": prob, "ratio": float in (0, 1) (drop fraction per cell),
+            "d_range": (lo, hi)  # grid cell size in px (per item sample),
+            "rotation_deg": float (max rotation of the grid),
+            "fill_value": float}
+    """
+    B, C, H, W = img.shape
+    p = float(spec.get("p", 1.0))
+    ratio = float(spec.get("ratio", 0.5))
+    if not (0.0 < ratio < 1.0):
+        raise ValueError(f"grid_mask ratio must be in (0, 1); got {ratio}")
+    dlo, dhi = spec.get("d_range", (max(8, H // 16), max(16, H // 4)))
+    rot_max = float(spec.get("rotation_deg", 45.0))
+    fill_value = float(spec.get("fill_value", 0.0))
+
+    gate = torch.zeros(B, dtype=torch.bool)
+    per_item_grid = torch.zeros(B, 1, H, W, dtype=img.dtype)
+    yy, xx = _xy_coords(H, W, img.dtype)   # CPU coords (cached)
+    yy_c = yy - (H - 1) / 2.0
+    xx_c = xx - (W - 1) / 2.0
+    for i in range(B):
+        g = cpu_generator(per_item_seed(seed_base, epoch, step, i, "grid_mask"))
+        if not sample_bool(p, g):
+            continue
+        gate[i] = True
+        d = max(2, int(round(sample_uniform(dlo, dhi, g))))
+        l = int(round(d * ratio))   # drop-region side length within cell
+        # phase offset within first cell
+        off_y = int(sample_uniform(0, d, g)) % d
+        off_x = int(sample_uniform(0, d, g)) % d
+        # rotation
+        theta = math.radians(sample_uniform(-rot_max, rot_max, g))
+        cos_t = math.cos(theta); sin_t = math.sin(theta)
+        # rotate centred coords
+        y_rot =  cos_t * yy_c + sin_t * xx_c
+        x_rot = -sin_t * yy_c + cos_t * xx_c
+        y_mod = (y_rot.long() + off_y) % d
+        x_mod = (x_rot.long() + off_x) % d
+        cell_mask = (y_mod < l) & (x_mod < l)
+        per_item_grid[i, 0] = cell_mask.to(img.dtype)
+    grid_d = per_item_grid.to(img.device).expand_as(img) > 0.5
+    out = torch.where(grid_d, torch.full_like(img, fill_value), img)
+    gate_d = gate.to(img.device).view(B, 1, 1, 1)
+    out = torch.where(gate_d.expand_as(img), out, img)
+    return out, mask
+
+
+def _cutmix_perm(B: int, seed_base: int, epoch: int, step: int):
+    """Shared CPU-side batch-permutation for cutmix / mixup. Single seed
+    (per-call, not per-item) keeps the partner mapping consistent and
+    deterministic across CPU/GPU."""
+    g = cpu_generator(per_item_seed(seed_base, epoch, step, 0, "cutmix_perm"))
+    return torch.randperm(B, generator=g)
+
+
+def cutmix(img, mask, spec, seed_base, epoch, step):
+    """CutMix (Yun 2019): cut a rectangular region from partner image B and
+    paste into image A. Mixing fraction λ sampled from Beta(α, α).
+
+    Partner is `perm[i]` for sample i, where `perm` is a shared per-call
+    randperm of the batch. Recover (λ, partner_idx) for label mixing via
+    `paraug.mix_info("cutmix", seed_base, epoch, step, B)`.
+
+    spec = {"p": prob, "alpha": float (Beta(α, α))}
+
+    Note: classification training that uses cutmix needs to mix labels by λ
+    too. paraug doesn't track labels — see `mix_info` helper.
+    """
+    B, C, H, W = img.shape
+    p = float(spec.get("p", 1.0))
+    alpha = float(spec.get("alpha", 1.0))
+    if alpha <= 0.0:
+        raise ValueError(f"cutmix alpha must be > 0; got {alpha}")
+
+    gate = torch.zeros(B, dtype=torch.bool)
+    region_mask = torch.zeros(B, 1, H, W, dtype=img.dtype)
+    for i in range(B):
+        g = cpu_generator(per_item_seed(seed_base, epoch, step, i, "cutmix"))
+        if not sample_bool(p, g):
+            continue
+        gate[i] = True
+        # λ ~ Beta(α, α) via two independent Gammas
+        ga = torch.empty(1).normal_(0, 1, generator=g)  # placeholder, replaced below
+        # Use the gamma trick: X = Gamma(α, 1); Beta = X1 / (X1 + X2).
+        # torch.distributions are not generator-aware, so sample via inverse-CDF
+        # of two uniforms then map. For α=1 (default), Beta(1,1) = Uniform(0,1).
+        if abs(alpha - 1.0) < 1e-8:
+            lam = float(torch.empty(1).uniform_(0, 1, generator=g).item())
+        else:
+            u1 = float(torch.empty(1).uniform_(0, 1, generator=g).item())
+            u2 = float(torch.empty(1).uniform_(0, 1, generator=g).item())
+            x1 = u1 ** (1.0 / alpha)
+            x2 = u2 ** (1.0 / alpha)
+            lam = x1 / (x1 + x2 + 1e-12)
+        # Bounding box of fraction (1 - λ) of the area
+        cut_frac = 1.0 - lam
+        cut_h = max(1, int(round(H * math.sqrt(cut_frac))))
+        cut_w = max(1, int(round(W * math.sqrt(cut_frac))))
+        cy = int(sample_uniform(0, max(1, H - cut_h), g))
+        cx = int(sample_uniform(0, max(1, W - cut_w), g))
+        region_mask[i, 0, cy:cy + cut_h, cx:cx + cut_w] = 1.0
+
+    perm = _cutmix_perm(B, seed_base, epoch, step).to(img.device)
+    region_d = region_mask.to(img.device).expand_as(img) > 0.5
+    partner = img[perm]
+    cutmixed = torch.where(region_d, partner, img)
+    gate_d = gate.to(img.device).view(B, 1, 1, 1)
+    out = torch.where(gate_d.expand_as(img), cutmixed, img)
+    return out, mask
+
+
+def mixup(img, mask, spec, seed_base, epoch, step):
+    """MixUp (Zhang 2017): linear interpolation of image A and partner B.
+    `out[i] = λ·img[i] + (1-λ)·img[perm[i]]`, λ ~ Beta(α, α).
+
+    Recover (λ, partner_idx) for label mixing via
+    `paraug.mix_info("mixup", seed_base, epoch, step, B)`.
+
+    spec = {"p": prob, "alpha": float (Beta(α, α))}
+    """
+    B = img.shape[0]
+    p = float(spec.get("p", 1.0))
+    alpha = float(spec.get("alpha", 0.2))
+    if alpha <= 0.0:
+        raise ValueError(f"mixup alpha must be > 0; got {alpha}")
+
+    gate = torch.zeros(B, dtype=torch.bool)
+    lams = torch.ones(B, dtype=img.dtype)
+    for i in range(B):
+        g = cpu_generator(per_item_seed(seed_base, epoch, step, i, "mixup"))
+        if not sample_bool(p, g):
+            continue
+        gate[i] = True
+        if abs(alpha - 1.0) < 1e-8:
+            lam = float(torch.empty(1).uniform_(0, 1, generator=g).item())
+        else:
+            u1 = float(torch.empty(1).uniform_(0, 1, generator=g).item())
+            u2 = float(torch.empty(1).uniform_(0, 1, generator=g).item())
+            x1 = u1 ** (1.0 / alpha)
+            x2 = u2 ** (1.0 / alpha)
+            lam = x1 / (x1 + x2 + 1e-12)
+        # Clip away from 0 / 1 — pure identity gives no aug signal.
+        lams[i] = max(0.01, min(0.99, lam))
+
+    perm = _cutmix_perm(B, seed_base, epoch, step).to(img.device)
+    lams_d = lams.to(img.device).view(B, 1, 1, 1)
+    partner = img[perm]
+    mixed = lams_d * img + (1.0 - lams_d) * partner
+    gate_d = gate.to(img.device).view(B, 1, 1, 1)
+    out = torch.where(gate_d.expand_as(img), mixed, img)
+    return out, mask
+
+
 PHOTOMETRIC_PRIMITIVES = {
     "gamma": gamma,
     "gaussian_noise": gaussian_noise,
@@ -1475,6 +1694,11 @@ PHOTOMETRIC_PRIMITIVES = {
     "paper_glare": paper_glare,
     "white_balance_shift": white_balance_shift,
     "defocus_blur": defocus_blur,
+    # v0.7.0 modern aug primitives
+    "random_erasing": random_erasing,
+    "grid_mask": grid_mask,
+    "cutmix": cutmix,
+    "mixup": mixup,
 }
 
 

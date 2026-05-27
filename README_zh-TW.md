@@ -9,9 +9,10 @@
 
 **Languages**: [English](README.md) | 繁體中文
 
-`paraug` 是一個通用 PyTorch 原生影像增強函式庫。**31 個 primitive**
-（7 geometric + 24 photometric）、**GPU batch native**、**CPU/GPU
-位元級精確對齊**：相同的 seed 在 CPU 跟 CUDA 上產生相同的輸出。每個
+`paraug` 是一個通用 PyTorch 原生影像增強函式庫。**35 個 primitive**
+（7 geometric + 28 photometric, 含 CutMix / MixUp / GridMask /
+RandomErasing）、**GPU batch native**、**CPU/GPU 位元級精確對齊**:
+相同的 seed 在 CPU 跟 CUDA 上產生相同的輸出。每個
 primitive 的隨機數都在 CPU 端取樣，不受 tensor 在哪個 device 影響 ——
 即使訓練流程在 CPU/GPU 階段間隨機切換、或 unit test 換 backend 跑，結果
 仍然 deterministic。
