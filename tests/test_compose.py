@@ -262,7 +262,7 @@ def test_call_no_grad_on_graph_inputs():
 def test_chunk_size_correctness_deterministic_per_seed():
     """chunk_size produces deterministic output per (seed_base, chunk_size).
     Same seed_base + chunk_size → identical output across calls."""
-    cfg = {"geometric": {"perspective": {"p": 1.0, "scale_range": (0.1, 0.2)}},
+    cfg = {"geometric": {"perspective": {"p": 1.0, "max_disp_frac": 0.08}},
            "photometric": {"gamma": {"p": 1.0, "gamma_range": (0.7, 1.3)}}}
     fg = torch.rand(8, 3, 32, 32, device="cuda")
     bg = torch.rand(8, 3, 32, 32, device="cuda")
