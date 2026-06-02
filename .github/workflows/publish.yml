@@ -24,7 +24,16 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # Release gate: run the full test workflow (spec-key audit + pytest matrix +
+  # example smoke) and publish only if it passes. Uses workflow_call (NOT
+  # workflow_run) so the gate is part of this same tag-triggered run with no
+  # ordering race. Prevents shipping to PyPI on red CI (the v0.5.4–v0.7.0 gap).
+  tests:
+    uses: ./.github/workflows/test.yml
+
   build-and-publish:
+    needs: tests
+    if: ${{ needs.tests.result == 'success' }}
     runs-on: ubuntu-latest
     environment:
       name: pypi

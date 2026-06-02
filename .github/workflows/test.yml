@@ -12,6 +12,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:   # allow publish.yml to reuse this as a release gate
 
 # Opt all Node-based actions into the Node 24 runtime ahead of the
 # 2026-06-02 default flip, so the deprecation warning is silenced.
