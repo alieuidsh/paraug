@@ -15,7 +15,8 @@ Quickstart:
 """
 from .pipeline import AugPipeline
 from .utils import (set_deterministic, per_item_seed, cpu_generator,
-                    set_fast_noise, fast_noise_enabled)
+                    set_fast_noise, fast_noise_enabled,
+                    set_device_rng, device_rng_enabled)
 from .geometric import GEOMETRIC_PRIMITIVES
 from .photometric import PHOTOMETRIC_PRIMITIVES
 from .layout import place_into_canvas
@@ -25,13 +26,15 @@ from . import presets
 from . import geometric
 from . import photometric
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 __all__ = [
     "AugPipeline",
     "set_deterministic",
     "set_fast_noise",
     "fast_noise_enabled",
+    "set_device_rng",
+    "device_rng_enabled",
     "per_item_seed",
     "cpu_generator",
     "GEOMETRIC_PRIMITIVES",

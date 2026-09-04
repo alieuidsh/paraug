@@ -268,6 +268,27 @@ output than `fast_noise=False` for the same seed. Determinism per
 `(seed_base, epoch, step)` is preserved within either mode. Leave off
 when running the parity tests; turn on for production training.
 
+### `paraug.set_device_rng(True)` — speed *without* giving up parity
+
+Same three noise primitives, but the dense field is generated on the
+device by a counter-based **Philox4x32-10** written in integer torch ops
+(`paraug/philox.py`), so the uint32 stream is bit-identical on CPU and
+CUDA (Random123 known-answer vectors pass) and item `i` never depends on
+which other items share the batch. Env: `PARAUG_PHILOX=1`,
+`PARAUG_DEVICE_RNG=philox|hash`.
+
+```python
+paraug.set_device_rng(True)                  # Philox4x32-10
+paraug.set_device_rng(True, backend="hash")  # lowbias32: ~2.5x less memory traffic
+```
+
+Contract: sample values differ from the CPU-generator stream (same
+distribution), so it is opt-in and runs made without it reproduce exactly.
+Precedence when both flags are on: `fast_noise` > `device_rng` > CPU.
+Only enable on CUDA — the same integer path on CPU is slower than
+MT19937. Measured with every primitive at p=1, bs32 256²: RTX 4090
+97 → 222 img/s, RTX 3060 83 → 128 img/s (hash).
+
 ### `AugPipeline(cfg, ..., chunk_size=N)` — VRAM
 
 Splits the batch into sub-batches of size `N` internally, runs the full

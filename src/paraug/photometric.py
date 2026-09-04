@@ -11,6 +11,8 @@ import math
 import torch
 
 from .utils import per_item_seed, cpu_generator, sample_uniform, sample_bool, fast_noise_enabled
+from . import utils as _u
+from .philox import device_normal_batch as philox_normal_batch, device_uniform_batch as philox_uniform_batch
 
 
 # ─── 13: gamma ────────────────────────────────────────────────────────
@@ -69,15 +71,27 @@ def gaussian_noise(img, mask, spec, seed_base, epoch, step):
         return out, mask
 
     gate = torch.zeros(B, dtype=torch.bool)
-    noise = torch.zeros_like(img.cpu()) if img.is_cuda else torch.zeros_like(img)
     sigmas = torch.zeros(B, dtype=img.dtype)
-    for i in range(B):
-        g = cpu_generator(per_item_seed(seed_base, epoch, step, i, "gaussian_noise"))
-        if sample_bool(p, g):
-            gate[i] = True
-            sigmas[i] = sample_uniform(smin, smax, g)
-            noise[i] = torch.empty_like(img[0].cpu() if img.is_cuda else img[0]).normal_(0.0, 1.0, generator=g) * sigmas[i]
-    noise_d = noise.to(img.device)
+    if _u.USE_PHILOX:
+        # gate/sigma still sampled per item on CPU (tiny); the dense field is
+        # generated on-device by Philox, keyed per item -> no CPU RNG, no H2D copy.
+        for i in range(B):
+            g = cpu_generator(per_item_seed(seed_base, epoch, step, i, "gaussian_noise"))
+            if sample_bool(p, g):
+                gate[i] = True
+                sigmas[i] = sample_uniform(smin, smax, g)
+        z = philox_normal_batch(lambda i: per_item_seed(seed_base, epoch, step, i, "gaussian_noise"),
+                                B, tuple(img.shape[1:]), img.device, img.dtype)
+        noise_d = z * sigmas.to(img.device).view(B, 1, 1, 1)
+    else:
+        noise = torch.zeros_like(img.cpu()) if img.is_cuda else torch.zeros_like(img)
+        for i in range(B):
+            g = cpu_generator(per_item_seed(seed_base, epoch, step, i, "gaussian_noise"))
+            if sample_bool(p, g):
+                gate[i] = True
+                sigmas[i] = sample_uniform(smin, smax, g)
+                noise[i] = torch.empty_like(img[0].cpu() if img.is_cuda else img[0]).normal_(0.0, 1.0, generator=g) * sigmas[i]
+        noise_d = noise.to(img.device)
     gate_d = gate.to(img.device).view(B, 1, 1, 1)
     out = torch.where(gate_d.expand_as(img), (img + noise_d).clamp(0, 1), img)
     return out, mask
@@ -110,17 +124,28 @@ def salt_pepper_noise(img, mask, spec, seed_base, epoch, step):
         return out, mask
 
     gate = torch.zeros(B, dtype=torch.bool)
-    # Per-pixel uniform mask, per-item; we sample (B, 1, H, W) on CPU
-    pix_rand = torch.zeros(B, 1, H, W, dtype=img.dtype)
-    salt_choice = torch.zeros(B, 1, H, W, dtype=img.dtype)
-    for i in range(B):
-        g = cpu_generator(per_item_seed(seed_base, epoch, step, i, "salt_pepper_noise"))
-        if sample_bool(p, g):
-            gate[i] = True
-            pix_rand[i, 0] = torch.empty(H, W).uniform_(0.0, 1.0, generator=g)
-            salt_choice[i, 0] = torch.empty(H, W).uniform_(0.0, 1.0, generator=g)
-    pix_d = pix_rand.to(img.device)
-    salt_d = salt_choice.to(img.device)
+    if _u.USE_PHILOX:
+        for i in range(B):
+            g = cpu_generator(per_item_seed(seed_base, epoch, step, i, "salt_pepper_noise"))
+            if sample_bool(p, g):
+                gate[i] = True
+        # one Philox pass yields both fields: (B, 2, H, W) -> pix / salt
+        both = philox_uniform_batch(lambda i: per_item_seed(seed_base, epoch, step, i, "salt_pepper_noise"),
+                                    B, (2, H, W), img.device, img.dtype)
+        pix_d = both[:, 0:1]
+        salt_d = both[:, 1:2]
+    else:
+        # Per-pixel uniform mask, per-item; we sample (B, 1, H, W) on CPU
+        pix_rand = torch.zeros(B, 1, H, W, dtype=img.dtype)
+        salt_choice = torch.zeros(B, 1, H, W, dtype=img.dtype)
+        for i in range(B):
+            g = cpu_generator(per_item_seed(seed_base, epoch, step, i, "salt_pepper_noise"))
+            if sample_bool(p, g):
+                gate[i] = True
+                pix_rand[i, 0] = torch.empty(H, W).uniform_(0.0, 1.0, generator=g)
+                salt_choice[i, 0] = torch.empty(H, W).uniform_(0.0, 1.0, generator=g)
+        pix_d = pix_rand.to(img.device)
+        salt_d = salt_choice.to(img.device)
     gate_d = gate.to(img.device).view(B, 1, 1, 1)
     affected = pix_d < density          # bool mask of pixels to change
     is_salt = salt_d < salt_frac        # salt vs pepper choice
@@ -708,14 +733,25 @@ def jpeg_approx(img, mask, spec, seed_base, epoch, step):
         return out, mask
 
     gate = torch.zeros(B, dtype=torch.bool)
-    noise = torch.zeros_like(img.cpu()) if img.is_cuda else torch.zeros_like(img)
-    for i in range(B):
-        gn = cpu_generator(per_item_seed(seed_base, epoch, step, i, "jpeg_approx"))
-        if sample_bool(p, gn):
-            gate[i] = True
-            sigma = sample_uniform(smin, smax, gn)
-            noise[i] = torch.empty_like(img[0].cpu() if img.is_cuda else img[0]).normal_(0.0, 1.0, generator=gn) * sigma
-    noise_d = noise.to(img.device)
+    if _u.USE_PHILOX:
+        sig = torch.zeros(B, dtype=img.dtype)
+        for i in range(B):
+            gn = cpu_generator(per_item_seed(seed_base, epoch, step, i, "jpeg_approx"))
+            if sample_bool(p, gn):
+                gate[i] = True
+                sig[i] = sample_uniform(smin, smax, gn)
+        z = philox_normal_batch(lambda i: per_item_seed(seed_base, epoch, step, i, "jpeg_approx"),
+                                B, tuple(img.shape[1:]), img.device, img.dtype)
+        noise_d = z * sig.to(img.device).view(B, 1, 1, 1)
+    else:
+        noise = torch.zeros_like(img.cpu()) if img.is_cuda else torch.zeros_like(img)
+        for i in range(B):
+            gn = cpu_generator(per_item_seed(seed_base, epoch, step, i, "jpeg_approx"))
+            if sample_bool(p, gn):
+                gate[i] = True
+                sigma = sample_uniform(smin, smax, gn)
+                noise[i] = torch.empty_like(img[0].cpu() if img.is_cuda else img[0]).normal_(0.0, 1.0, generator=gn) * sigma
+        noise_d = noise.to(img.device)
     gate_d = gate.to(img.device).view(B, 1, 1, 1)
     # 3×3 box blur shared across batch
     kbox = torch.full((1, 1, 3, 3), 1.0 / 9.0, dtype=img.dtype, device=img.device)
@@ -804,24 +840,32 @@ def creases(img, mask, spec, seed_base, epoch, step):
     width = float(spec.get("width_px", 6.0))
     dlo, dhi = spec.get("darkness_range", (0.1, 0.35))
     gate = torch.zeros(B, dtype=torch.bool)
-    shade = torch.zeros(B, 1, H, W, dtype=img.dtype)
     dark_acc = torch.zeros(B, dtype=img.dtype)
-    yy, xx = _xy_coords(H, W, img.dtype)
+    # Sample crease params per item on CPU (a few scalars), render all lines
+    # batched on the image device (Phase 5: was per-line full-res exp on CPU).
+    nmax = int(nhi)
+    prm = torch.zeros(B, nmax, 4, dtype=img.dtype)   # cx, cy, sin, cos
+    valid = torch.zeros(B, nmax, dtype=torch.bool)
     for i in range(B):
         g = cpu_generator(per_item_seed(seed_base, epoch, step, i, "creases"))
         if sample_bool(p, g):
             gate[i] = True
             dark_acc[i] = sample_uniform(dlo, dhi, g)
             n = int(torch.empty(1).uniform_(nlo, nhi + 1, generator=g).item())
-            for _ in range(n):
+            for k in range(min(n, nmax)):
                 cx = sample_uniform(0, W - 1, g)
                 cy = sample_uniform(0, H - 1, g)
                 ang = sample_uniform(0, math.pi, g)
-                sin_a, cos_a = math.sin(ang), math.cos(ang)
-                dist = ((xx - cx) * sin_a - (yy - cy) * cos_a).abs()
-                line = torch.exp(-(dist * dist) / (2 * width * width))
-                shade[i, 0] = torch.maximum(shade[i, 0], line)
-    shade_d = shade.to(img.device)
+                prm[i, k] = torch.tensor([cx, cy, math.sin(ang), math.cos(ang)], dtype=img.dtype)
+                valid[i, k] = True
+    yy, xx = _xy_coords(H, W, img.dtype, img.device)
+    prm_d = prm.to(img.device); valid_d = valid.to(img.device)
+    cx = prm_d[..., 0].view(B, nmax, 1, 1); cy = prm_d[..., 1].view(B, nmax, 1, 1)
+    sa = prm_d[..., 2].view(B, nmax, 1, 1); ca = prm_d[..., 3].view(B, nmax, 1, 1)
+    dist = ((xx - cx) * sa - (yy - cy) * ca).abs()                      # (B, nmax, H, W)
+    line = torch.exp(-(dist * dist) / (2 * width * width))
+    line = torch.where(valid_d.view(B, nmax, 1, 1), line, torch.zeros_like(line))
+    shade_d = line.amax(dim=1, keepdim=True)                            # (B, 1, H, W)
     dark_d = dark_acc.to(img.device).view(B, 1, 1, 1)
     gate_d = gate.to(img.device).view(B, 1, 1, 1)
     factor = (1.0 - dark_d * shade_d).expand_as(img).clamp(0, 1)
@@ -1019,19 +1063,21 @@ def paper_texture_overlay(img, mask, spec, seed_base, epoch, step):
     strength = float(spec.get("blend_strength", 0.3))
     sigma = float(spec.get("sigma", 30.0))
     gate = torch.zeros(B, dtype=torch.bool)
-    texture = torch.ones(B, 1, H, W, dtype=img.dtype)
+    hl = max(4, int(H / sigma)); wl = max(4, int(W / sigma))
+    raw = torch.zeros(B, 1, hl, wl, dtype=img.dtype)
     for i in range(B):
         gn = cpu_generator(per_item_seed(seed_base, epoch, step, i, "paper_texture_overlay"))
         if sample_bool(p, gn):
             gate[i] = True
-            # Low-res random → bilinear upsample (Gaussian-like smoothness)
-            hl = max(4, int(H / sigma)); wl = max(4, int(W / sigma))
-            raw = torch.empty(1, 1, hl, wl).normal_(0.0, 1.0, generator=gn)
-            up = F.interpolate(raw, size=(H, W), mode="bilinear", align_corners=False)[0, 0]
-            # Normalise to [0.85, 1.15] (multiplicative factor centered at 1)
-            up = (up - up.mean()) / (up.std() + 1e-6)
-            texture[i, 0] = (1.0 + 0.15 * up).clamp(1.0 - strength, 1.0 + strength)
-    texture_d = texture.to(img.device)
+            raw[i, 0] = torch.empty(hl, wl).normal_(0.0, 1.0, generator=gn)
+    # Batched upsample + per-item z-normalise on the image device (Phase 5).
+    up = F.interpolate(raw.to(img.device), size=(H, W), mode="bilinear", align_corners=False)
+    mu = up.mean(dim=(2, 3), keepdim=True)
+    sd = up.std(dim=(2, 3), keepdim=True)
+    up = (up - mu) / (sd + 1e-6)
+    texture_d = (1.0 + 0.15 * up).clamp(1.0 - strength, 1.0 + strength)
+    # Non-gated items keep texture=1 (they are masked by gate below anyway).
+    texture_d = torch.where(gate.to(img.device).view(B, 1, 1, 1), texture_d, torch.ones_like(texture_d))
     gate_d = gate.to(img.device).view(B, 1, 1, 1)
     new_img = (img * texture_d.expand_as(img)).clamp(0, 1)
     out = torch.where(gate_d.expand_as(img), new_img, img)

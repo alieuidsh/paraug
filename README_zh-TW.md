@@ -243,6 +243,23 @@ CPU-path 在 canvas 大時是 per-call 時間大戶 (canvas 1024 bs=20 ~350 ms),
 不會等值。Per `(seed_base, epoch, step)` 的 determinism 在各 mode 內都保留。
 跑 parity test 時關掉; production training 開。
 
+### `paraug.set_device_rng(True)` — 速度，但保住 parity
+
+同樣的三個 noise primitive，dense 隨機場改由純整數 torch op 實作的 counter-based
+**Philox4x32-10**（`paraug/philox.py`）在 device 上生成：uint32 串流在 CPU/CUDA
+逐位元相同（Random123 known-answer vectors 全過），而且 item `i` 不受同 batch
+其他 item 影響。環境變數：`PARAUG_PHILOX=1`、`PARAUG_DEVICE_RNG=philox|hash`。
+
+```python
+paraug.set_device_rng(True)                  # Philox4x32-10
+paraug.set_device_rng(True, backend="hash")  # lowbias32：記憶體流量少 ~2.5x
+```
+
+契約：樣本值跟 CPU generator 的串流不同（分佈相同），所以是 opt-in，沒開的舊
+run 完全重現。兩個旗標都開時優先序：`fast_noise` > `device_rng` > CPU。只在
+CUDA 上開——同樣的整數路徑在 CPU 上比 MT19937 慢。全部 primitive p=1、bs32 256²
+實測：RTX 4090 97 → 222 img/s、RTX 3060 83 → 128 img/s（hash）。
+
 ### `AugPipeline(cfg, ..., chunk_size=N)` — VRAM
 
 把 batch 內部切成大小 N 的 sub-batches 各跑完整 pipeline 然後 concat。

@@ -160,17 +160,14 @@ def perspective(img, mask, spec, seed_base, epoch, step):
     yy, xx = _coords(H, W, "cpu", img.dtype)
     base_grid = torch.stack([2.0 * xx / (W - 1) - 1.0,
                              2.0 * yy / (H - 1) - 1.0], dim=-1)  # (H, W, 2) in [-1, 1]
-    grids = torch.empty(B, H, W, 2, dtype=img.dtype)
-    for i in range(B):
-        Hmat = _solve_homography(src, dst_all[i])
-        # Apply homography to base_grid pixels (back-warp)
-        bg = base_grid.reshape(-1, 2)  # (HW, 2)
-        ones = torch.ones(bg.shape[0], 1, dtype=img.dtype)
-        bgh = torch.cat([bg, ones], dim=1)  # (HW, 3)
-        warped = bgh @ Hmat.T
-        warped = warped[:, :2] / warped[:, 2:].clamp(min=1e-8)
-        grids[i] = warped.reshape(H, W, 2)
-    grid = grids.to(img.device)
+    # Per-item 3x3 solve stays on CPU (B tiny solves); the dense HxW warp is
+    # applied batched on the image device (Phase 5: was a per-item CPU loop).
+    Hmats = torch.stack([_solve_homography(src, dst_all[i]) for i in range(B)]).to(img.device)  # (B,3,3)
+    bg = base_grid.reshape(-1, 2).to(img.device)                    # (HW, 2)
+    bgh = torch.cat([bg, torch.ones(bg.shape[0], 1, dtype=img.dtype, device=img.device)], dim=1)  # (HW,3)
+    warped = torch.einsum("nk,bjk->bnj", bgh, Hmats)                # (B, HW, 3)
+    warped = warped[..., :2] / warped[..., 2:].clamp(min=1e-8)
+    grid = warped.reshape(B, H, W, 2)
     gate_d = gate.to(img.device)
     return _apply_grid(img, mask, grid, gate_d)
 
@@ -241,23 +238,19 @@ def elastic_transform(img, mask, spec, seed_base, epoch, step):
     alpha = float(spec.get("alpha", 8.0))
 
     gate = torch.zeros(B, dtype=torch.bool)
-    # Per-item random field at full resolution, smoothed via separable Gaussian
-    disp_y = torch.zeros(B, H, W, dtype=img.dtype)
-    disp_x = torch.zeros(B, H, W, dtype=img.dtype)
-    # Build a low-res random field (H/8, W/8) and bicubic-upsample for speed +
-    # smoothness (equivalent to smoothing with σ proportional to scale factor).
+    # Low-res random field (H/8, W/8) sampled per item on CPU (tiny), then
+    # bilinear-upsampled *batched on the image device* (Phase 5: was per-item
+    # full-res interpolate on CPU + 2 full-res H2D copies).
     hl = max(8, int(H / 8)); wl = max(8, int(W / 8))
+    low = torch.zeros(B, 2, hl, wl, dtype=img.dtype)
     for i in range(B):
         g = cpu_generator(per_item_seed(seed_base, epoch, step, i, "elastic_transform"))
         if sample_bool(p, g):
             gate[i] = True
-            dy_low = torch.empty(1, 1, hl, wl).uniform_(-1.0, 1.0, generator=g)
-            dx_low = torch.empty(1, 1, hl, wl).uniform_(-1.0, 1.0, generator=g)
-            # Upsample bilinear, scale by alpha
-            disp_y[i] = F.interpolate(dy_low, size=(H, W), mode="bilinear", align_corners=False)[0, 0] * alpha
-            disp_x[i] = F.interpolate(dx_low, size=(H, W), mode="bilinear", align_corners=False)[0, 0] * alpha
-            # Optional: gaussian smooth — keep simple with bilinear upsample only
-    disp_y_d = disp_y.to(img.device); disp_x_d = disp_x.to(img.device)
+            low[i, 0] = torch.empty(hl, wl).uniform_(-1.0, 1.0, generator=g)
+            low[i, 1] = torch.empty(hl, wl).uniform_(-1.0, 1.0, generator=g)
+    disp = F.interpolate(low.to(img.device), size=(H, W), mode="bilinear", align_corners=False) * alpha
+    disp_y_d = disp[:, 0]; disp_x_d = disp[:, 1]
     gate_d = gate.to(img.device)
     yy, xx = _coords(H, W, img.device, img.dtype)
     src_x = xx[None] - disp_x_d

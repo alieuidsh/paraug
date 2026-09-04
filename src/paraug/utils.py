@@ -137,3 +137,33 @@ def set_fast_noise(state: bool = True) -> None:
 
 def fast_noise_enabled() -> bool:
     return _FAST_NOISE
+
+
+# ── Device-side *parity-preserving* RNG (Philox4x32-10 / lowbias32 hash) ─────
+# Third option between the CPU path (bit-exact, slow) and fast_noise (cuRAND,
+# fast, breaks parity): counter-based generators implemented in integer torch
+# ops, so the same seed gives the same uint32 stream on CPU and CUDA while the
+# dense field is produced on the device. See philox.py. Precedence inside the
+# noise primitives: fast_noise > device_rng > CPU generator.
+import os as _os
+USE_PHILOX: bool = _os.environ.get("PARAUG_PHILOX", "0") not in ("0", "", "false", "False")
+DEVICE_RNG: str = _os.environ.get("PARAUG_DEVICE_RNG", "philox")   # "philox" | "hash"
+
+
+def set_device_rng(state: bool = True, backend: str = "philox") -> None:
+    """Enable device-side Philox RNG for gaussian_noise / jpeg_approx /
+    salt_pepper_noise. Keeps CPU/CUDA bit-exact parity (unlike fast_noise) and
+    per-item independence from batch composition. Changes the sample values vs
+    the CPU-generator stream (same distribution), so it is opt-in. backend:
+    "philox" (Philox4x32-10, Random123 KAT-verified) or "hash" (lowbias32,
+    ~2.5x less memory traffic — better on bandwidth-limited GPUs). Only worth
+    enabling when tensors live on CUDA; on CPU it is slower than MT19937."""
+    global USE_PHILOX, DEVICE_RNG
+    if backend not in ("philox", "hash"):
+        raise ValueError(f"backend must be 'philox' or 'hash', got {backend!r}")
+    USE_PHILOX = bool(state)
+    DEVICE_RNG = backend
+
+
+def device_rng_enabled() -> bool:
+    return USE_PHILOX

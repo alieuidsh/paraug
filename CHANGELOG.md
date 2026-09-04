@@ -4,6 +4,44 @@ All notable changes to paraug are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-09-05
+
+### Added — device-side RNG that keeps parity
+
+- **`paraug.set_device_rng(True, backend="philox")`** (env `PARAUG_PHILOX=1`,
+  `PARAUG_DEVICE_RNG=philox|hash`) — third option between the CPU generator
+  (bit-exact, slow) and `set_fast_noise` (cuRAND, fast, breaks parity).
+  `paraug/philox.py` implements **Philox4x32-10** in pure integer torch ops
+  (16-bit split multiply, no int64 overflow), so the uint32 stream is
+  bit-identical on CPU and CUDA (Random123 known-answer vectors pass) while
+  `gaussian_noise` / `jpeg_approx` / `salt_pepper_noise` generate their dense
+  fields on the device. Per-item keyed → item `i` is independent of batch
+  composition (unlike `fast_noise`, which seeds one generator per batch).
+  Per-item gate/sigma still come from the CPU generator. Precedence:
+  `fast_noise` > `device_rng` > CPU. `backend="hash"` (lowbias32) uses ~2.5x
+  less memory traffic and wins on bandwidth-limited GPUs (RTX 3060).
+- `tests/test_philox.py` — KAT vectors, mulhilo vs Python bigint, uniform /
+  normal stats, batch-size independence, CPU↔CUDA bit-exactness, noise-op
+  parity in both backends, and a guard that the default mode is unchanged.
+
+### Changed — batched dense compute on device
+
+- `perspective`, `elastic_transform`, `creases`, `paper_texture_overlay`:
+  scalar params are still sampled per item on CPU (semantics unchanged); the
+  H×W work (homography warp, bilinear upsample, line rendering, z-normalise)
+  is now one batched op on the image device instead of a per-item CPU loop
+  plus full-resolution H2D copies. Outputs differ from 0.7.0 only by float
+  ordering (≤ 5e-5 grid class, ≤ 1.2e-7 elementwise). perspective 55 → 11 ms,
+  creases 46 → 2 ms, elastic 40 → 1.4 ms, paper_texture 22 → 0.8 ms
+  (bs32 256², RTX 4090).
+
+### Measured
+
+All primitives at p=1, bs32 256², img/s: **RTX 4090 97 → 222** (philox),
+**RTX 3060 83 → 128** (hash). End-to-end with a 6M-param net at 87% VRAM:
+aug-inline step 824 → 644 ms. Caveat: the device-RNG path on *CPU* tensors
+is 3-5x slower than MT19937 — only enable on CUDA.
+
 ## [0.7.0] - 2026-05-27
 
 ### Added — 4 modern aug primitives
