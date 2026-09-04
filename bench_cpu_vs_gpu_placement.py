@@ -20,7 +20,7 @@ from paraug import AugPipeline
 CFG = {
     "geometric": {
         "affine":  {"p": 1.0, "rot_deg": 15.0, "scale_range": (0.9, 1.1)},
-        "perspective": {"p": 0.5, "scale_range": (0.05, 0.10)},
+        "perspective": {"p": 0.5, "max_disp_frac": 0.08},
     },
     "photometric": {
         "color_jitter":  {"p": 0.5, "brightness": 0.2, "contrast": 0.2},
