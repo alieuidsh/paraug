@@ -35,12 +35,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   creases 46 → 2 ms, elastic 40 → 1.4 ms, paper_texture 22 → 0.8 ms
   (bs32 256², RTX 4090).
 
-### Measured
+### Measured (v0.8.0, all 39 primitives at p=1, bs32 256², img/s)
 
-All primitives at p=1, bs32 256², img/s: **RTX 4090 97 → 222** (philox),
-**RTX 3060 83 → 128** (hash). End-to-end with a 6M-param net at 87% VRAM:
-aug-inline step 824 → 644 ms. Caveat: the device-RNG path on *CPU* tensors
-is 3-5x slower than MT19937 — only enable on CUDA.
+| mode                          | RTX 4090 | RTX 3060 |
+|-------------------------------|---------:|---------:|
+| CPU generator (default)       |      119 |       97 |
+| `device_rng` philox (parity)  |      137 |       88 |
+| `device_rng` hash (parity)    |  **167** |  **105** |
+| `fast_noise` cuRAND (no parity)|     167 |      128 |
+
+Per noise primitive on the 3060 (ms, bs32): CPU 34 / philox 37 / hash 17 /
+fast_noise 0.9. Philox in unfused int64 torch ops is memory-bandwidth-bound,
+so it only pays off on high-bandwidth GPUs; prefer `backend="hash"` on
+bandwidth-limited cards, and `fast_noise` when parity is not required.
+The batched dense compute alone (no RNG flag) lifted the 4090 from ~97 to
+119 img/s. Caveat: the device-RNG path on *CPU* tensors is 3-5x slower than
+MT19937 — only enable on CUDA.
 
 ## [0.7.0] - 2026-05-27
 

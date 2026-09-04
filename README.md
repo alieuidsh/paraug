@@ -286,8 +286,10 @@ Contract: sample values differ from the CPU-generator stream (same
 distribution), so it is opt-in and runs made without it reproduce exactly.
 Precedence when both flags are on: `fast_noise` > `device_rng` > CPU.
 Only enable on CUDA — the same integer path on CPU is slower than
-MT19937. Measured with every primitive at p=1, bs32 256²: RTX 4090
-97 → 222 img/s, RTX 3060 83 → 128 img/s (hash).
+MT19937. Measured with all 39 primitives at p=1, bs32 256² (img/s):
+RTX 4090 119 → 167 (hash), RTX 3060 97 → 105 (hash); `fast_noise` gives
+167 / 128 without parity. Philox itself is memory-bandwidth-bound in
+unfused torch ops, so prefer `backend="hash"` on bandwidth-limited cards.
 
 ### `AugPipeline(cfg, ..., chunk_size=N)` — VRAM
 

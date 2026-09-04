@@ -257,8 +257,10 @@ paraug.set_device_rng(True, backend="hash")  # lowbias32：記憶體流量少 ~2
 
 契約：樣本值跟 CPU generator 的串流不同（分佈相同），所以是 opt-in，沒開的舊
 run 完全重現。兩個旗標都開時優先序：`fast_noise` > `device_rng` > CPU。只在
-CUDA 上開——同樣的整數路徑在 CPU 上比 MT19937 慢。全部 primitive p=1、bs32 256²
-實測：RTX 4090 97 → 222 img/s、RTX 3060 83 → 128 img/s（hash）。
+CUDA 上開——同樣的整數路徑在 CPU 上比 MT19937 慢。全部 39 個 primitive p=1、bs32 256²
+實測（img/s）：RTX 4090 119 → 167（hash）、RTX 3060 97 → 105（hash）；`fast_noise`
+不保 parity 可到 167 / 128。Philox 在未融合的 torch op 裡是記憶體頻寬瓶頸，頻寬小的
+卡請用 `backend="hash"`。
 
 ### `AugPipeline(cfg, ..., chunk_size=N)` — VRAM
 
